@@ -7,7 +7,9 @@
 #define EMBED_DIM 100   // number of columns
 #define MAX_VALUE 100   // maximum value of an embedding dimension
 #define NUM_QUERIES 100  // number of word id queries
-#define ITERATIONS 1000000  // number of timing loops
+#define ITERATIONS 100000  // number of timing loops
+
+#define QUERY_FILE "real_queries.txt"
 
 void random_fill(float** arr, int m, int n)
 {
@@ -89,7 +91,7 @@ int main()
   FILE *fp;
   int value;
   int idx = -1;
-  fp = fopen("real_queries.txt", "r");
+  fp = fopen(QUERY_FILE, "r");
   assert(fp);
   while (!feof(fp) && fscanf(fp, "%d", &value) && idx++ < NUM_QUERIES)
   {
@@ -102,6 +104,7 @@ int main()
   clock_t start, end, total_time;
   double cpu_time_used;
   float* row;
+  int total_queries = 0;
 
   for(s = 0; s < ITERATIONS; s++)
   {
@@ -115,12 +118,14 @@ int main()
       {
         //row[j] = matrix[query][j];
         responses[t][j] = row[j];
+        total_queries++;
         //responses[t][j] = matrix[query][j];
         //responses[t][j] = matrix[queries[t]][j];
       }
     }
     end = clock();
     total_time += end - start;
+    //printf("[it %d] %lu sec\n", s, (end - start)/CLOCKS_PER_SEC);
   }
 
   cpu_time_used = ((double) (total_time)) / CLOCKS_PER_SEC;
@@ -129,6 +134,8 @@ int main()
   printf("%f sec (per iter, %d queries/iter)\n", cpu_time_used/ITERATIONS, NUM_QUERIES);
   printf("Completed %d queries\n", NUM_QUERIES*ITERATIONS);
 
+  assert(total_queries==(ITERATIONS*NUM_QUERIES*EMBED_DIM));
+  printf("Total floats queried=%d\n", total_queries);
   // Clean up
   free(temp);
   free(matrix);
