@@ -62,6 +62,8 @@ unsigned long long gettime()
 #define ID2COLD_PARTITION(id) (id / COLD_WORDS_PER_PARTITION)
 #define ID2COLD_PARTITION_OFFSET(id) (id - NUM_HOT_WORDS - (ID2COLD_PARTITION(id)*COLD_WORDS_PER_PARTITION))
 
+#define MAX(x,y) (((x)>(y))?(x):(y))
+
 #define QUERY_FILE "./text/mobydick_queries.txt"
 #define NUM_QUERIES 232951
 
@@ -103,6 +105,7 @@ struct worker_data
   struct queue_root *work_queue;
   struct queue_root *hot_queue;
   double words_ps;
+  double max_words_ps;
   unsigned long long rounds;
 };
 
@@ -140,6 +143,8 @@ static void *worker_loop(void *_worker_data)
   float* row;
   int word_id;
   int partition_id, lookup_id;
+
+  td->max_words_ps = 0;
 
   while (1)
   {
@@ -213,6 +218,7 @@ static void *worker_loop(void *_worker_data)
       unsigned long long delta = t1 - t0;
       double words_ps = (double)counter / ((double) delta / 1000000000LL);
       td->words_ps = words_ps;
+      td->max_words_ps = MAX(words_ps, td->max_words_ps);
       td->rounds += 1;
       // t0 = t1;
 
@@ -380,37 +386,52 @@ int main(int argc, char **argv)
   }
 
   // Collect statistics
-  double avg, dev, rounds_avg, rounds_dev, words_avg, words_dev;
-  while (running_workers > 0)
-  {
-    nanosleep(&ts, NULL);
-    // Single round shorter than 1 ms?
-    // if (threshold / worker_data[0].words_ps < 0.001)
-    // {
-    //   fprintf(stderr, "threshold %lli -> %lli\n",
-    //           threshold,
-    //           threshold*2);
-    //   threshold *= 2;
-    //   continue;
-    // }
+  // double avg, dev, rounds_avg, rounds_dev, words_avg, words_dev;
+  // while (running_workers > 0)
+  // {
+  //   nanosleep(&ts, NULL);
+  //   // Single round shorter than 1 ms?
+  //   // if (threshold / worker_data[0].words_ps < 0.001)
+  //   // {
+  //   //   fprintf(stderr, "threshold %lli -> %lli\n",
+  //   //           threshold,
+  //   //           threshold*2);
+  //   //   threshold *= 2;
+  //   //   continue;
+  //   // }
+  //
+  //   struct stddev sd, rounds, words;
+  //   memset(&sd, 0, sizeof(sd));
+  //   memset(&rounds, 0, sizeof(rounds));
+  //   memset(&words, 0, sizeof(words));
+  //   for (i=0; i < NUM_WORKERS; i++)
+  //   {
+  //     stddev_add(&rounds, worker_data[i].rounds);
+  //     stddev_add(&words, worker_data[i].words_ps);
+  //   }
+  //   // double avg, dev, rounds_avg, rounds_dev, words_avg, words_dev;
+  //   stddev_get(&sd, NULL, &avg, &dev);
+  //   stddev_get(&rounds, NULL, &rounds_avg, &rounds_dev);
+  //   stddev_get(&words, NULL, &words_avg, &words_dev);
+  //   // printf("%.3f, %.3f, %.3f, %.3f, %.3f, %llu\n", sd.sum, avg, dev, rounds_avg, rounds_dev, threshold);
+  //   printf("wps: avg=%.3f, std=%.3f\n", words_avg, words_dev);
+  // }
 
-    struct stddev sd, rounds, words;
-    memset(&sd, 0, sizeof(sd));
-    memset(&rounds, 0, sizeof(rounds));
-    memset(&words, 0, sizeof(words));
-    for (i=0; i < NUM_WORKERS; i++)
-    {
-      stddev_add(&rounds, worker_data[i].rounds);
-      stddev_add(&words, worker_data[i].words_ps);
-    }
-    // double avg, dev, rounds_avg, rounds_dev, words_avg, words_dev;
-    stddev_get(&sd, NULL, &avg, &dev);
-    stddev_get(&rounds, NULL, &rounds_avg, &rounds_dev);
-    stddev_get(&words, NULL, &words_avg, &words_dev);
-    // printf("%.3f, %.3f, %.3f, %.3f, %.3f, %llu\n", sd.sum, avg, dev, rounds_avg, rounds_dev, threshold);
-    printf("wps: avg=%.3f, std=%.3f\n", words_avg, words_dev);
+  for (i = 0; i < NUM_WORKERS; i++)
+  {
+    pthread_join(worker_data[i].thread_id, NULL);
   }
-  if (iteration >= WARMUP) { wps_avg += words_avg; }
+
+  struct stddev max_words;
+  memset(&max_words, 0, sizeof(max_words));
+  for (i = 0; i < NUM_WORKERS; i++)
+  {
+    stddev_add(&max_words, worker_data[i].max_words_ps);
+  }
+  double max_words_avg, max_words_dev;
+  stddev_get(&max_words, NULL, &max_words_avg, &max_words_dev);
+  printf("max wps: avg=%.3f, std=%.3f\n", max_words_avg, max_words_dev);
+  if (iteration >= WARMUP) { wps_avg += max_words_avg; }
 }
 wps_avg /= ITERATIONS;
 
