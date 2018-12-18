@@ -40,6 +40,9 @@ unsigned long long gettime()
 #define NUM_WORKERS 1  // 1 per CPU
 // #define WORKERS_PER_PARTITION 2 // !!
 
+#define USE_LOCKS 1
+#define LOCKING 1
+
 #define WORKLOAD_SIZE 100  // number of items dequeued per queue access
 
 #define ITERATIONS 10
@@ -127,14 +130,14 @@ static void *worker_loop(void *_worker_data)
   while (1)
   {
     // prioritize "cold" words over "hot" words because cold words can be accessed only by a unique worker
-    retrieved = queue_get_n(work_queue, workload, WORKLOAD_SIZE, td->worker_id);
+    retrieved = queue_get_n(work_queue, workload, WORKLOAD_SIZE, td->worker_id, !((NUM_WORKERS == NUM_PARTITIONS) || (NUM_WORKERS == 1)));
 
     if (retrieved == 0)
     {
       if (HOTCOLD_MODE == HOTCOLD_AWARE)
       {
         // pull word_ids off of hot queue
-        retrieved = queue_get_n(hot_queue, workload, WORKLOAD_SIZE, td->worker_id);
+        retrieved = queue_get_n(hot_queue, workload, WORKLOAD_SIZE, td->worker_id, !(NUM_WORKERS == 1));
         if (retrieved == 0)
         {
           // nothing left to do
@@ -408,7 +411,7 @@ int main(int argc, char **argv)
 wps_avg /= ITERATIONS;
 
 
-  Write out response matrix
+  //Write out response matrix
   printf("Writing out responses to file...\n");
   file = fopen(RESPONSE_FILE, "w");
   if (file == NULL)

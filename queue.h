@@ -19,6 +19,6 @@ void queue_put(struct queue_head *new,
                struct queue_root *root);
 
 struct queue_head *queue_get(struct queue_root *root);
-int queue_get_n(struct queue_root *root, struct queue_head *workload[], int n, int worker_id);
+int queue_get_n(struct queue_root *root, struct queue_head *workload[], int n, int worker_id, int locking);
 
 #endif // QUEUE_H

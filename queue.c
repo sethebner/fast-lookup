@@ -7,6 +7,7 @@
 #include "queue.h"
 
 #define QUEUE_POISON1 ((void*)0xDEADBEEF)
+#define USE_LOCKS 1
 
 struct queue_root
 {
@@ -77,7 +78,7 @@ struct queue_head *queue_get(struct queue_root *root)
   }
 }
 
-int queue_get_n(struct queue_root *root, struct queue_head **workload, int n, int worker_id)
+int queue_get_n(struct queue_root *root, struct queue_head **workload, int n, int worker_id, int locking)
 {
   /*
     Return up to n items from the queue (stored in `workload`).
@@ -87,7 +88,10 @@ int queue_get_n(struct queue_root *root, struct queue_head **workload, int n, in
 
   int i;
   int retrieved = 0;
-  pthread_mutex_lock(&root->head_lock);
+  if (locking == USE_LOCKS)
+  {
+    pthread_mutex_lock(&root->head_lock);
+  }
   for (i = 0; i < n; i++)
   {
     // Retrieve a queue item
@@ -99,7 +103,10 @@ int queue_get_n(struct queue_root *root, struct queue_head **workload, int n, in
       {
         // No more items on queue
         // return as much as we popped
-        pthread_mutex_unlock(&root->head_lock);
+        if (locking == USE_LOCKS)
+        {
+          pthread_mutex_unlock(&root->head_lock);
+        }
         return retrieved;
       }
       root->head = next;
@@ -117,7 +124,10 @@ int queue_get_n(struct queue_root *root, struct queue_head **workload, int n, in
     }
   }
   // got n items from queue
-  pthread_mutex_unlock(&root->head_lock);
+  if (locking == USE_LOCKS)
+  {
+    pthread_mutex_unlock(&root->head_lock);
+  }
   return retrieved;
 
 }
