@@ -408,25 +408,25 @@ int main(int argc, char **argv)
 wps_avg /= ITERATIONS;
 
 
-  // Write out response matrix
-  // printf("Writing out responses to file...\n");
-  // file = fopen(RESPONSE_FILE, "w");
-  // if (file == NULL)
-  // {
-  //   printf("Response file not found.\n");
-  //   exit(1);
-  // }
-  //
-  // for (i = 0; i < NUM_QUERIES; i++)
-  // {
-  //   fprintf(file, "[%d]: ", query_list[i]);
-  //   for (j = 0; j < EMB_SIZE; j++)
-  //   {
-  //     fprintf(file, "%f ", response_matrix[i][j]);
-  //   }
-  //   fprintf(file, "\n");
-  // }
-  // fclose(file);
+  Write out response matrix
+  printf("Writing out responses to file...\n");
+  file = fopen(RESPONSE_FILE, "w");
+  if (file == NULL)
+  {
+    printf("Response file not found.\n");
+    exit(1);
+  }
+
+  for (i = 0; i < NUM_QUERIES; i++)
+  {
+    fprintf(file, "[%d]: ", query_list[i]);
+    for (j = 0; j < EMB_SIZE; j++)
+    {
+      fprintf(file, "%f ", response_matrix[i][j]);
+    }
+    fprintf(file, "\n");
+  }
+  fclose(file);
 
   printf("avg wps: %f\n", wps_avg);
   printf("%llu items processed, %d items assigned\n", total_items_processed, prefill*(ITERATIONS+WARMUP));
