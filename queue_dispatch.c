@@ -38,10 +38,7 @@ unsigned long long gettime()
 #define HOTCOLD_AWARE 0
 
 #define NUM_WORKERS 1  // 1 per CPU
-// #define WORKERS_PER_PARTITION 2 // !!
 
-// #define USE_LOCKS 1
-// #define LOCKING 1
 #define COLD_QUEUE_LOCKING (!((NUM_WORKERS == NUM_PARTITIONS) || (NUM_WORKERS == 1)))
 #define HOT_QUEUE_LOCKING (!(NUM_WORKERS == 1))
 
@@ -161,9 +158,6 @@ static void *worker_loop(void *_worker_data)
           modify_worker_count(-1);
           return NULL;
         }
-        else
-        {
-        }
       }
       else
       {
@@ -172,9 +166,6 @@ static void *worker_loop(void *_worker_data)
 
         return NULL;
       }
-    }
-    else
-    {
     }
 
 
@@ -205,15 +196,6 @@ static void *worker_loop(void *_worker_data)
           response_matrix[row_id][j] = cold_embedding_matrices[partition_id][lookup_id][j];
         }
       }
-
-
-      // row = embedding_matrix[word_id];
-      // memcpy(response_matrix[row_id], (float*)row, sizeof response_matrix[row_id]); // slow
-      // for(j = 0; j < EMB_SIZE; j++)
-      // {
-      //   // response_matrix[row_id][j] = row[j];
-      //   response_matrix[row_id][j] = cold_embedding_matrices[0][word_id][j]; // !!
-      // }
     }
 
     total_items_processed += retrieved;
@@ -259,11 +241,7 @@ int assign_queue(int word_id)
   {
     if (word_id < NUM_HOT_WORDS) { return 0; } // hot queue, which is available to all nodes
     else { return ID2COLD_PARTITION(word_id) + 1; }
-    // else { return (word_id / COLD_WORDS_PER_PARTITION) + 1; }
-    // else { return word_id % num_cold_queues + 1; } // do not assign to hot queue; assign to appropriate cold queue
   }
-  // else { return word_id % num_cold_queues; } // no hot queue, so assign to a cold queue; ignores #items in queues/load balancing
-  // else { return word_id / COLD_WORDS_PER_PARTITION; }
   else { return ID2COLD_PARTITION(word_id); }
 }
 
@@ -275,44 +253,10 @@ int get_random()
 int main(int argc, char **argv)
 {
   int i, j, k;
-  // int num_partitions = 1; // number of partitions
   int prefill = NUM_QUERIES; // size of batch
-  // int num_cold_queues, num_hot_queues, num_queues, num_workers;
 
-
-  // if (argc > 1)
-  // {
-  //   // num_partitions = atoi(argv[1]);  // number of cold partitions
-  // }
-  // if (argc > 2)
-  // {
-  //   // prefill = atoi(argv[2]);
-  // }
-  // if (argc > 3)
-  // {
-  //   fprintf(stderr, "Usage: %s [npartitions] [prefill]\n", argv[0]);
-  //   abort();
-  // }
   fprintf(stderr, "Running with npartitions=%i, prefill=%i\n", NUM_PARTITIONS, prefill);
   threshold /= NUM_PARTITIONS;
-
-  // num_cold_queues = NUM_PARTITIONS;
-
-  // if (HOTCOLD_MODE == HOTCOLD_AWARE)
-  // {
-  //   num_hot_queues = 1;
-  //   // num_queues = num_partitions + 1; // queue 0 is a privileged queue for "hot" words that all nodes may access
-  // }
-  // else
-  // {
-  //   num_hot_queues = 0;
-  //   // num_queues = num_partitions;
-  // }
-  // num_queues = num_cold_queues + num_hot_queues;
-
-  // TODO: check this for correctness. should we have num_workers = num_nodes * WORKERS_PER_NODE?
-  // num_workers = num_partitions * WORKERS_PER_PARTITION;
-  // num_workers = NUM_WORKERS;
 
   if (HOTCOLD_MODE == HOTCOLD_AWARE)
   {
@@ -322,24 +266,6 @@ int main(int argc, char **argv)
   {
     printf("NOT Hot-Cold aware. Privileged hot queue NOT created.\n");
   }
-
-  // Create embedding matrix
-  // FILE *file;
-  // file = fopen(MATRIX_FILE, "r");
-  // if (file == NULL)
-  // {
-  //   printf("Matrix file not found.\n");
-  //   exit(1);
-  // }
-  //
-  // for (i = 0; i < VOCAB_SIZE; i++)
-  // {
-  //   for (j = 0; j < EMB_SIZE; j++)
-  //   {
-  //     fscanf(file, "%f", &(embedding_matrix[i][j]));
-  //   }
-  // }
-  // fclose(file);
 
   // Create embedding matrices
   FILE *file;
@@ -489,7 +415,7 @@ int main(int argc, char **argv)
 wps_avg /= ITERATIONS;
 
 
-  //Write out response matrix
+  // Write out response matrix
   printf("Writing out responses to file...\n");
   file = fopen(RESPONSE_FILE, "w");
   if (file == NULL)
