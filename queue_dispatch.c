@@ -32,11 +32,13 @@ unsigned long long gettime()
 }
 #endif
 
-#define WORK_STEALING_MODE 1
-#define WORK_STEALING_ALLOWED 0
+#define NUM_PARTITIONS 1  // number of "cold" partitions
 
-#define WORKERS_PER_PARTITION 1 // !!
-#define THREADS_PER_WORKER 1
+#define HOTCOLD_MODE 1
+#define HOTCOLD_AWARE 0
+
+#define NUM_WORKERS 1  // 1 per CPU
+// #define WORKERS_PER_PARTITION 2 // !!
 
 #define WORKLOAD_SIZE 100  // number of items dequeued per queue access
 
@@ -82,44 +84,17 @@ static void *malloc_aligned(unsigned int size)
   return ptr;
 }
 
-// struct thread_data
-// {
-//   pthread_t thread_id;
-//   struct queue_root *queue;
-//   double locks_ps;
-//   unsigned long long rounds;
-// };
-
-struct partition_data
-{
-  int partition_id;
-  // pthread_t worker_ids[WORKERS_PER_PARTITION];
-  struct queue_root *pqueue;
-  double locks_ps;
-  unsigned long long rounds;
-};
-
-// struct queue_data
-// {
-//   int queue_id;
-//   pthread_t worker_ids[WORKERS_PER_PARTITION];
-//   struct queue_root *qqueue;
-//   double locks_ps;
-//   unsigned long long rounds;
-// };
-
 struct worker_data
 {
   pthread_t thread_id;
   int worker_id;
-  // pthread_t thread_ids[THREADS_PER_WORKER];
   struct queue_root *work_queue;
   struct queue_root *hot_queue;
   double words_ps;
   unsigned long long rounds;
 };
 
-static unsigned long long threshold = 10000;
+static unsigned long long threshold = 1000;
 
 static unsigned long long total_items_processed = 0;
 
@@ -141,7 +116,6 @@ static void *worker_loop(void *_worker_data)
   INIT_QUEUE_HEAD(item, -1, -1); // dummy initialize
 
   t0 = gettime();
-  // struct queue_head **workload = malloc_aligned(sizeof(struct queue_head*) * WORKLOAD_SIZE);
   struct queue_head *workload[WORKLOAD_SIZE];
 
   int i, j;
@@ -157,7 +131,7 @@ static void *worker_loop(void *_worker_data)
 
     if (retrieved == 0)
     {
-      if (WORK_STEALING_MODE == WORK_STEALING_ALLOWED)
+      if (HOTCOLD_MODE == HOTCOLD_AWARE)
       {
         // pull word_ids off of hot queue
         retrieved = queue_get_n(hot_queue, workload, WORKLOAD_SIZE, td->worker_id);
@@ -214,7 +188,7 @@ static void *worker_loop(void *_worker_data)
       double words_ps = (double)counter / ((double) delta / 1000000000LL);
       td->words_ps = words_ps;
       td->rounds += 1;
-      t0 = t1;
+      // t0 = t1;
 
       #if DEBUG_ON
       printf("worker=%d round done: %llu in %.3fms, words per sec=%.3f\n",
@@ -225,6 +199,7 @@ static void *worker_loop(void *_worker_data)
       #endif
 
       counter = 0;
+      t0 = gettime();
     }
   }
 
@@ -233,14 +208,14 @@ static void *worker_loop(void *_worker_data)
   return NULL;
 }
 
-int assign_queue(int word_id, int num_partitions, int num_hot_words)
+int assign_queue(int word_id, int num_cold_queues, int num_hot_words)
 {
-  if (WORK_STEALING_MODE == WORK_STEALING_ALLOWED)
+  if (HOTCOLD_MODE == HOTCOLD_AWARE)
   {
     if (word_id < num_hot_words) { return 0; } // hot queue available to all nodes
-    else { return word_id % num_partitions + 1; } // do not assign to hot queue; assign to appropriate cold queue
+    else { return word_id % num_cold_queues + 1; } // do not assign to hot queue; assign to appropriate cold queue
   }
-  else { return word_id % num_partitions; } // no hot queue, so assign to a cold queue; ignores #items in queues/load balancing
+  else { return word_id % num_cold_queues; } // no hot queue, so assign to a cold queue; ignores #items in queues/load balancing
 }
 
 int get_random()
@@ -251,46 +226,52 @@ int get_random()
 int main(int argc, char **argv)
 {
   int i, j;
-  int num_partitions = 1; // number of partitions
+  // int num_partitions = 1; // number of partitions
   int prefill = NUM_QUERIES; // size of batch
-  int num_queues, num_workers;
+  int num_cold_queues, num_hot_queues, num_queues, num_workers;
 
 
   if (argc > 1)
   {
-    num_partitions = atoi(argv[1]);
+    // num_partitions = atoi(argv[1]);  // number of cold partitions
   }
   if (argc > 2)
   {
-    prefill = atoi(argv[2]);
+    // prefill = atoi(argv[2]);
   }
   if (argc > 3)
   {
     fprintf(stderr, "Usage: %s [npartitions] [prefill]\n", argv[0]);
     abort();
   }
-  fprintf(stderr, "Running with npartitions=%i, prefill=%i\n", num_partitions, prefill);
-  threshold /= num_partitions;
+  fprintf(stderr, "Running with npartitions=%i, prefill=%i\n", NUM_PARTITIONS, prefill);
+  threshold /= NUM_PARTITIONS;
 
-  if (WORK_STEALING_MODE == WORK_STEALING_ALLOWED)
+  num_cold_queues = NUM_PARTITIONS;
+
+  if (HOTCOLD_MODE == HOTCOLD_AWARE)
   {
-    num_queues = num_partitions + 1; // queue 0 is a privileged queue for "hot" words that all nodes may access
+    num_hot_queues = 1;
+    // num_queues = num_partitions + 1; // queue 0 is a privileged queue for "hot" words that all nodes may access
   }
   else
   {
-    num_queues = num_partitions;
+    num_hot_queues = 0;
+    // num_queues = num_partitions;
   }
+  num_queues = num_cold_queues + num_hot_queues;
 
   // TODO: check this for correctness. should we have num_workers = num_nodes * WORKERS_PER_NODE?
-  num_workers = num_partitions * WORKERS_PER_PARTITION;
+  // num_workers = num_partitions * WORKERS_PER_PARTITION;
+  num_workers = NUM_WORKERS;
 
-  if (WORK_STEALING_MODE == WORK_STEALING_ALLOWED)
+  if (HOTCOLD_MODE == HOTCOLD_AWARE)
   {
-    printf("Work stealing allowed. Privileged hot queue created.\n");
+    printf("Hot-Cold aware. Privileged hot queue created.\n");
   }
   else
   {
-    printf("Work stealing NOT allowed. Privileged hot queue NOT created.\n");
+    printf("NOT Hot-Cold aware. Privileged hot queue NOT created.\n");
   }
 
   // Create embedding matrix
@@ -326,67 +307,12 @@ int main(int argc, char **argv)
   fclose(file);
 
 
-  // Master queue
-  // holds word_id's to assign to partition queues + hot queue if it exists
-  struct queue_root *mqueue = ALLOC_QUEUE_ROOT();
-
   // Partition queues
   // holds word_id's to lookup
   struct queue_root *pqueues[num_queues];
   for (j=0; j < num_queues; j++)
   {
     pqueues[j] = ALLOC_QUEUE_ROOT();
-  }
-
-  // printf("Prefilling queues with queries...\n");
-  // for (i=0; i < prefill; i++)
-  // {
-  //   int word_id = query_list[i];
-  //   struct queue_head *item = malloc_aligned(sizeof(struct queue_head));
-  //   INIT_QUEUE_HEAD(item, word_id, i);
-  //   int queue_id = assign_queue(word_id, num_partitions, NUM_HOT_WORDS);
-  //   //printf("Putting word_id=%i in queue=%i\n", item->word_id, queue_id);
-  //   queue_put(item, pqueues[queue_id]);
-  // }
-  // printf("Queues filled.\n");
-
-  struct partition_data *partition_data[num_queues];
-  for (j=0; j < num_queues; j++)
-  {
-    partition_data[j] = malloc_aligned(sizeof(struct partition_data));
-    partition_data[j]->partition_id = j;
-    partition_data[j]->pqueue = pqueues[j];
-
-    // TODO: assign values to rest of partition_data fields?
-  }
-
-
-  // Dequeue and print word_id's of queues' contents: debugging only since it removes items from queue
-  if (DEBUG_MODE == DEBUG_ON)
-  {
-    int c;
-    for (j=0; j < num_queues; j++)
-    {
-      printf("Queue %i\n", j);
-      // struct queue_root *pqueue = pqueues[j];
-      struct queue_root *pqueue = partition_data[j]->pqueue;
-      struct queue_head *item = malloc_aligned(sizeof(struct queue_head));
-      INIT_QUEUE_HEAD(item, -1, -1);
-      c = 0;
-      while (1)
-      {
-        item = queue_get(pqueue);
-        if (item == NULL)
-        {
-          // no more items in queue
-          printf("%i items in queue %i\n", c, j);
-          break;
-        }
-        c += 1;
-        printf("word_id=%i\n", item->word_id);
-      }
-      printf("\n");
-    }
   }
 
   struct timespec ts;
@@ -410,7 +336,7 @@ int main(int argc, char **argv)
       int word_id = query_list[i];
       struct queue_head *item = malloc_aligned(sizeof(struct queue_head));
       INIT_QUEUE_HEAD(item, word_id, i);
-      int queue_id = assign_queue(word_id, num_partitions, NUM_HOT_WORDS);
+      int queue_id = assign_queue(word_id, num_cold_queues, NUM_HOT_WORDS);
       //printf("Putting word_id=%i in queue=%i\n", item->word_id, queue_id);
       queue_put(item, pqueues[queue_id]);
     }
@@ -420,18 +346,21 @@ int main(int argc, char **argv)
     modify_worker_count(1);
 
     // assign worker to a partition's queue and to the hot queue if it exists
-    if (WORK_STEALING_MODE == WORK_STEALING_ALLOWED)
+    worker_data[i].worker_id = i;
+    if (HOTCOLD_MODE == HOTCOLD_AWARE)
     {
-      worker_data[i].work_queue = pqueues[i%num_queues + 1];
+      worker_data[i].work_queue = pqueues[i%num_cold_queues + 1];
       worker_data[i].hot_queue = pqueues[0];
+      // printf("w=%d -> q=%d\n", worker_data[i].worker_id, i%num_cold_queues + 1);
     }
     else
     {
       worker_data[i].work_queue = pqueues[i % num_queues];
       worker_data[i].hot_queue = NULL;
+      // printf("w=%d -> q=%d\n", worker_data[i].worker_id, i % num_queues);
     }
 
-    worker_data[i].worker_id = i;
+    // worker_data[i].worker_id = i;
     int r = pthread_create(&worker_data[i].thread_id,
                            NULL,
                            &worker_loop,
@@ -479,7 +408,7 @@ int main(int argc, char **argv)
 wps_avg /= ITERATIONS;
 
 
-  // Write out response matrix
+  Write out response matrix
   printf("Writing out responses to file...\n");
   file = fopen(RESPONSE_FILE, "w");
   if (file == NULL)
