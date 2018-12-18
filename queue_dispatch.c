@@ -40,6 +40,9 @@ unsigned long long gettime()
 
 #define WORKLOAD_SIZE 100  // number of items dequeued per queue access
 
+#define ITERATIONS 10
+#define WARMUP 3
+
 #define MAX_N 1000
 #define MIN_N 0
 
@@ -112,7 +115,6 @@ struct worker_data
   // pthread_t thread_ids[THREADS_PER_WORKER];
   struct queue_root *work_queue;
   struct queue_root *hot_queue;
-  //double locks_ps;
   double words_ps;
   unsigned long long rounds;
 };
@@ -127,6 +129,8 @@ static float response_matrix[NUM_QUERIES][EMB_SIZE];
 
 static void *worker_loop(void *_worker_data)
 {
+  // TODO: sleep a little at the start to allow all workers to be created before starting?
+
   unsigned long long counter = 0;
   unsigned long long t0, t1;
   struct worker_data *td = (struct worker_data *)_worker_data;
@@ -155,34 +159,21 @@ static void *worker_loop(void *_worker_data)
     {
       if (WORK_STEALING_MODE == WORK_STEALING_ALLOWED)
       {
-        // printf("Worker %i out of cold work. Reading from hot queue\n", td->worker_id);
-
         // pull word_ids off of hot queue
         retrieved = queue_get_n(hot_queue, workload, WORKLOAD_SIZE, td->worker_id);
         if (retrieved == 0)
         {
           // nothing left to do
-          // printf("Hot queue empty: No more work for worker %i\n", td->worker_id);
-
           modify_worker_count(-1);
           return NULL;
         }
         else
         {
-          // printf("Worker %i processed from the HOTQUEUE\t[", td->worker_id);
-          // int i;
-          // for(i = 0; i < retrieved; i++)
-          // {
-          //   printf("%d ", workload[i]->word_id);
-          // }
-          // printf("]\n");
         }
       }
       else
       {
         // nothing left to do
-        // printf("No more work for worker %i\n", td->worker_id);
-
         modify_worker_count(-1);
 
         return NULL;
@@ -190,13 +181,6 @@ static void *worker_loop(void *_worker_data)
     }
     else
     {
-      // printf("Worker %i processed\t [", td->worker_id);
-      // int i;
-      // for(i = 0; i < retrieved; i++)
-      // {
-      //   printf("%d ", workload[i]->word_id);
-      // }
-      // printf("]\n");
     }
 
 
@@ -227,11 +211,8 @@ static void *worker_loop(void *_worker_data)
       // profiling stats
       t1 = gettime();
       unsigned long long delta = t1 - t0;
-      //double locks_ps = (double)counter / ((double) delta / 1000000000LL);
       double words_ps = (double)counter / ((double) delta / 1000000000LL);
-      //td->locks_ps = locks_ps;
       td->words_ps = words_ps;
-      // printf("wps=%.3f\n", td->words_ps);
       td->rounds += 1;
       t0 = t1;
 
@@ -357,17 +338,17 @@ int main(int argc, char **argv)
     pqueues[j] = ALLOC_QUEUE_ROOT();
   }
 
-  printf("Prefilling queues with queries...\n");
-  for (i=0; i < prefill; i++)
-  {
-    int word_id = query_list[i];
-    struct queue_head *item = malloc_aligned(sizeof(struct queue_head));
-    INIT_QUEUE_HEAD(item, word_id, i);
-    int queue_id = assign_queue(word_id, num_partitions, NUM_HOT_WORDS);
-    //printf("Putting word_id=%i in queue=%i\n", item->word_id, queue_id);
-    queue_put(item, pqueues[queue_id]);
-  }
-  printf("Queues filled.\n");
+  // printf("Prefilling queues with queries...\n");
+  // for (i=0; i < prefill; i++)
+  // {
+  //   int word_id = query_list[i];
+  //   struct queue_head *item = malloc_aligned(sizeof(struct queue_head));
+  //   INIT_QUEUE_HEAD(item, word_id, i);
+  //   int queue_id = assign_queue(word_id, num_partitions, NUM_HOT_WORDS);
+  //   //printf("Putting word_id=%i in queue=%i\n", item->word_id, queue_id);
+  //   queue_put(item, pqueues[queue_id]);
+  // }
+  // printf("Queues filled.\n");
 
   struct partition_data *partition_data[num_queues];
   for (j=0; j < num_queues; j++)
@@ -415,6 +396,25 @@ int main(int argc, char **argv)
   struct worker_data *worker_data = malloc_aligned(sizeof(struct worker_data) * num_workers);
 
   // Create processes for each worker
+  int iteration;
+  float wps_avg;
+  for (iteration=0; iteration < ITERATIONS + WARMUP; iteration++)
+  {
+    if (iteration < WARMUP)
+    {
+      printf("[W] ");
+    }
+    printf("Prefilling queues with queries...\n");
+    for (i=0; i < prefill; i++)
+    {
+      int word_id = query_list[i];
+      struct queue_head *item = malloc_aligned(sizeof(struct queue_head));
+      INIT_QUEUE_HEAD(item, word_id, i);
+      int queue_id = assign_queue(word_id, num_partitions, NUM_HOT_WORDS);
+      //printf("Putting word_id=%i in queue=%i\n", item->word_id, queue_id);
+      queue_put(item, pqueues[queue_id]);
+    }
+    // printf("Queues filled.\n");
   for (i=0; i < num_workers; i++)
   {
     modify_worker_count(1);
@@ -443,8 +443,8 @@ int main(int argc, char **argv)
     }
   }
 
-  printf("total loops per second, average loops per thread\n");
-  int reports = 0;
+  // Collect statistics
+  double avg, dev, rounds_avg, rounds_dev, words_avg, words_dev;
   while (running_workers > 0)
   {
     nanosleep(&ts, NULL);
@@ -464,21 +464,19 @@ int main(int argc, char **argv)
     memset(&words, 0, sizeof(words));
     for (i=0; i < num_workers; i++)
     {
-      //stddev_add(&sd, worker_data[i].locks_ps);
       stddev_add(&rounds, worker_data[i].rounds);
       stddev_add(&words, worker_data[i].words_ps);
     }
-    double avg, dev, rounds_avg, rounds_dev, words_avg, words_dev;
+    // double avg, dev, rounds_avg, rounds_dev, words_avg, words_dev;
     stddev_get(&sd, NULL, &avg, &dev);
     stddev_get(&rounds, NULL, &rounds_avg, &rounds_dev);
     stddev_get(&words, NULL, &words_avg, &words_dev);
     // printf("%.3f, %.3f, %.3f, %.3f, %.3f, %llu\n", sd.sum, avg, dev, rounds_avg, rounds_dev, threshold);
     printf("wps: avg=%.3f, std=%.3f\n", words_avg, words_dev);
-    if (reports++ > 20)
-    {
-      break;
-    }
   }
+  if (iteration >= WARMUP) { wps_avg += words_avg; }
+}
+wps_avg /= ITERATIONS;
 
 
   // Write out response matrix
@@ -501,8 +499,8 @@ int main(int argc, char **argv)
   }
   fclose(file);
 
-
-  printf("%llu items processed, %d items assigned\n", total_items_processed, prefill);
+  printf("avg wps: %f\n", wps_avg);
+  printf("%llu items processed, %d items assigned\n", total_items_processed, prefill*(ITERATIONS+WARMUP));
 
   return 0;
 }
