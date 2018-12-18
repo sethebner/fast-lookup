@@ -11,7 +11,7 @@ dispatch_demo: queue_dispatch_demo.c
 	$(CC) $(OPT) queue_dispatch_demo.c queue.c -o dispatch_demo
 
 dispatch: queue_dispatch.c
-	$(CC) $(OPT) queue_dispatch.c queue.c -o dispatch
+	$(CC) $(OPT) -pthread queue_dispatch.c queue.c -o dispatch -lm
 
 mpi_hello_world: mpi_hello_world.c
 	${MPICC} -o mpi_hello_world mpi_hello_world.c
