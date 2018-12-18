@@ -31,10 +31,11 @@ struct queue_root *ALLOC_QUEUE_ROOT()
   return root;
 }
 
-void INIT_QUEUE_HEAD(struct queue_head *head, int word_id)
+void INIT_QUEUE_HEAD(struct queue_head *head, int word_id, int row_id)
 {
   head->next = QUEUE_POISON1;
   head->word_id = word_id;
+  head->row_id = row_id;
 }
 
 void queue_put(struct queue_head *new,
@@ -74,4 +75,115 @@ struct queue_head *queue_get(struct queue_root *root)
     head->next = QUEUE_POISON1;
     return head;
   }
+}
+
+int queue_get_n(struct queue_root *root, struct queue_head **workload, int n, int worker_id)
+{
+  /*
+    Return up to n items from the queue (stored in `workload`).
+  */
+  // struct queue_head *head, *next;
+  //
+  // int i;
+  // int retrieved = 0;
+  // while (1)
+  // {
+  //   pthread_mutex_lock(&root->head_lock);
+  //   for (i = 0; i < n; i++)
+  //   {
+  //     head = root->head;
+  //     next = head->next;
+  //     if (next == NULL)
+  //     {
+  //       // No more items on queue
+  //       pthread_mutex_unlock(&root->head_lock);
+  //       printf("%d:queue empty\n", worker_id);
+  //       return retrieved;
+  //     }
+  //     root->head = next;
+  //     //pthread_mutex_unlock(&root->head_lock);
+  //
+  //     if (head == &root->divider)
+  //     {
+  //       queue_put(head, root);
+  //       pthread_mutex_unlock(&root->head_lock);
+  //       printf("%d:reached divider\n", worker_id);
+  //       return retrieved;
+  //     }
+  //
+  //     head->next = QUEUE_POISON1;
+  //     workload[i] = head;
+  //     printf("%d::workload[%d] gets word id %d\n", worker_id, i, head->word_id);
+  //     retrieved += 1;
+  //   }
+  //   pthread_mutex_unlock(&root->head_lock);
+  //   return retrieved;
+  // }
+
+
+  struct queue_head *head, *next;
+
+  int i;
+  int retrieved = 0;
+  pthread_mutex_lock(&root->head_lock);
+  for (i = 0; i < n; i++)
+  {
+    // Retrieve a queue item
+    while (1)
+    {
+      head = root->head;
+      next = head->next;
+      if (next == NULL)
+      {
+        // No more items on queue
+        pthread_mutex_unlock(&root->head_lock);
+        // printf("%d:queue empty\n", worker_id);
+        return retrieved;
+      }
+      root->head = next;
+      // pthread_mutex_unlock(&root->head_lock);
+
+      if (head == &root->divider)
+      {
+        queue_put(head, root);
+        // pthread_mutex_unlock(&root->head_lock);
+        // printf("%d:reached divider\n", worker_id);
+        continue;
+      }
+
+      head->next = QUEUE_POISON1;
+      workload[i] = head;
+      retrieved += 1;
+      // printf("%d::workload[%d] gets word id %d\n", worker_id, i, head->word_id);
+      break; // populate next element of `workload`
+    }
+  }
+  pthread_mutex_unlock(&root->head_lock);
+  return retrieved;
+
+
+  // struct queue_head *head, *next;
+  //
+  // while (1)
+  // {
+  //   pthread_mutex_lock(&root->head_lock);
+  //   head = root->head;
+  //   next = head->next;
+  //   if (next == NULL)
+  //   {
+  //     pthread_mutex_unlock(&root->head_lock);
+  //     return NULL;
+  //   }
+  //   root->head = next;
+  //   pthread_mutex_unlock(&root->head_lock);
+  //
+  //   if (head == &root->divider)
+  //   {
+  //     queue_put(head, root);
+  //     continue;
+  //   }
+  //
+  //   head->next = QUEUE_POISON1;
+  //   return head;
+  // }
 }
