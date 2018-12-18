@@ -33,16 +33,28 @@ unsigned long long gettime()
 #endif
 
 #define WORK_STEALING_MODE 1
-#define WORK_STEALING_ALLOWED 1
+#define WORK_STEALING_ALLOWED 0
 
-#define WORKERS_PER_PARTITION 1
+#define WORKERS_PER_PARTITION 1 // !!
 #define THREADS_PER_WORKER 1
+
+#define WORKLOAD_SIZE 100  // number of items dequeued per queue access
 
 #define MAX_N 1000
 #define MIN_N 0
 
 #define DEBUG_MODE 1
 #define DEBUG_ON 0
+
+#define MATRIX_FILE "./glove.6B/glove.6B.100d_embs.txt"
+#define VOCAB_SIZE 400001
+#define EMB_SIZE 100
+#define NUM_HOT_WORDS 1000
+
+#define QUERY_FILE "./text/mobydick_queries.txt"
+#define NUM_QUERIES 232951
+
+#define RESPONSE_FILE "./response/mobydick_response.txt"
 
 volatile int running_workers = 0;
 pthread_mutex_t worker_counter = PTHREAD_MUTEX_INITIALIZER;
@@ -100,12 +112,18 @@ struct worker_data
   // pthread_t thread_ids[THREADS_PER_WORKER];
   struct queue_root *work_queue;
   struct queue_root *hot_queue;
-  double locks_ps;
+  //double locks_ps;
   double words_ps;
   unsigned long long rounds;
 };
 
 static unsigned long long threshold = 10000;
+
+static unsigned long long total_items_processed = 0;
+
+static float embedding_matrix[VOCAB_SIZE][EMB_SIZE];
+static int query_list[NUM_QUERIES];
+static float response_matrix[NUM_QUERIES][EMB_SIZE];
 
 static void *worker_loop(void *_worker_data)
 {
@@ -116,33 +134,48 @@ static void *worker_loop(void *_worker_data)
   struct queue_root *hot_queue = td->hot_queue;
 
   struct queue_head *item = malloc_aligned(sizeof(struct queue_head));
-  INIT_QUEUE_HEAD(item, -1); // dummy initialize
+  INIT_QUEUE_HEAD(item, -1, -1); // dummy initialize
 
   t0 = gettime();
+  // struct queue_head **workload = malloc_aligned(sizeof(struct queue_head*) * WORKLOAD_SIZE);
+  struct queue_head *workload[WORKLOAD_SIZE];
+
+  int i, j;
+  int retrieved = 0;
+  int row_id;
+  float* row;
+  int word_id;
+
   while (1)
   {
     // prioritize "cold" words over "hot" words because cold words can be accessed only by a unique worker
-    item = queue_get(work_queue);
-    if (item == NULL)
+    retrieved = queue_get_n(work_queue, workload, WORKLOAD_SIZE, td->worker_id);
+
+    if (retrieved == 0)
     {
       if (WORK_STEALING_MODE == WORK_STEALING_ALLOWED)
       {
         // printf("Worker %i out of cold work. Reading from hot queue\n", td->worker_id);
 
-        // pull word_id off of hot queue
-        item = queue_get(hot_queue);
-        if (item == NULL)
+        // pull word_ids off of hot queue
+        retrieved = queue_get_n(hot_queue, workload, WORKLOAD_SIZE, td->worker_id);
+        if (retrieved == 0)
         {
           // nothing left to do
           // printf("Hot queue empty: No more work for worker %i\n", td->worker_id);
 
           modify_worker_count(-1);
-
           return NULL;
         }
         else
         {
-          // printf("Worker %i processed word_id=%i from the HOTQUEUE\n", td->worker_id, item->word_id);
+          // printf("Worker %i processed from the HOTQUEUE\t[", td->worker_id);
+          // int i;
+          // for(i = 0; i < retrieved; i++)
+          // {
+          //   printf("%d ", workload[i]->word_id);
+          // }
+          // printf("]\n");
         }
       }
       else
@@ -157,15 +190,35 @@ static void *worker_loop(void *_worker_data)
     }
     else
     {
-      // printf("Worker %i processed word_id=%i\n", td->worker_id, item->word_id);
+      // printf("Worker %i processed\t [", td->worker_id);
+      // int i;
+      // for(i = 0; i < retrieved; i++)
+      // {
+      //   printf("%d ", workload[i]->word_id);
+      // }
+      // printf("]\n");
     }
 
-    // TODO: look up word_id in matrix, and store in return matrix
-    //    (need row index? if so, store in queue items?)
-    // printf("Worker %i processed word_id=%i\n", td->worker_id, item->word_id);
 
-    counter++;
-    if (counter != threshold)
+    // look up word_id in matrix, and store in return matrix
+    for (i = 0; i < retrieved; i++)
+    {
+      row_id = workload[i]->row_id;
+      word_id = workload[i]->word_id;
+      // row = embedding_matrix[word_id];
+      // memcpy(response_matrix[row_id], (float*)row, sizeof response_matrix[row_id]); // slow
+      for(j = 0; j < EMB_SIZE; j++)
+      {
+        // response_matrix[row_id][j] = row[j];
+        response_matrix[row_id][j] = embedding_matrix[word_id][j];
+      }
+    }
+
+    total_items_processed += retrieved;
+
+
+    counter += retrieved;
+    if (counter < threshold)
     {
       continue;
     }
@@ -174,27 +227,27 @@ static void *worker_loop(void *_worker_data)
       // profiling stats
       t1 = gettime();
       unsigned long long delta = t1 - t0;
-      double locks_ps = (double)counter / ((double) delta / 1000000000LL);
-      td->locks_ps = locks_ps;
-      td->words_ps = (double)counter / ((double) delta / 1000000000LL);
+      //double locks_ps = (double)counter / ((double) delta / 1000000000LL);
+      double words_ps = (double)counter / ((double) delta / 1000000000LL);
+      //td->locks_ps = locks_ps;
+      td->words_ps = words_ps;
       // printf("wps=%.3f\n", td->words_ps);
       td->rounds += 1;
       t0 = t1;
-      counter = 0;
 
-      #if 0
-      printf("thread=%16lx round done in %.3fms, locks per sec=%.3f\n",
-             (long)pthread_self(),
+      #if DEBUG_ON
+      printf("worker=%d round done: %llu in %.3fms, words per sec=%.3f\n",
+             td->worker_id,
+             counter,
              (double)delta / 1000000,
-             locks_ps);
+             words_ps);
       #endif
+
+      counter = 0;
     }
   }
 
-  pthread_mutex_lock(&worker_counter);
-  running_workers--;
-  // printf("Workers still running=%i\n", running_workers);
-  pthread_mutex_unlock(&worker_counter);
+  modify_worker_count(-1);
 
   return NULL;
 }
@@ -218,9 +271,9 @@ int main(int argc, char **argv)
 {
   int i, j;
   int num_partitions = 1; // number of partitions
-  int prefill = 0; // size of batch
+  int prefill = NUM_QUERIES; // size of batch
   int num_queues, num_workers;
-  int num_hot_words = 100;
+
 
   if (argc > 1)
   {
@@ -247,6 +300,7 @@ int main(int argc, char **argv)
     num_queues = num_partitions;
   }
 
+  // TODO: check this for correctness. should we have num_workers = num_nodes * WORKERS_PER_NODE?
   num_workers = num_partitions * WORKERS_PER_PARTITION;
 
   if (WORK_STEALING_MODE == WORK_STEALING_ALLOWED)
@@ -257,6 +311,38 @@ int main(int argc, char **argv)
   {
     printf("Work stealing NOT allowed. Privileged hot queue NOT created.\n");
   }
+
+  // Create embedding matrix
+  FILE *file;
+  file = fopen(MATRIX_FILE, "r");
+  if (file == NULL)
+  {
+    printf("Matrix file not found.\n");
+    exit(1);
+  }
+
+  for (i = 0; i < VOCAB_SIZE; i++)
+  {
+    for (j = 0; j < EMB_SIZE; j++)
+    {
+      fscanf(file, "%f", &(embedding_matrix[i][j]));
+    }
+  }
+  fclose(file);
+
+  // Create query list
+  file = fopen(QUERY_FILE, "r");
+  if (file == NULL)
+  {
+    printf("Query file not found.\n");
+    exit(1);
+  }
+
+  for (i = 0; i < NUM_QUERIES; i++)
+  {
+    fscanf(file, "%d", &(query_list[i]));
+  }
+  fclose(file);
 
 
   // Master queue
@@ -271,15 +357,17 @@ int main(int argc, char **argv)
     pqueues[j] = ALLOC_QUEUE_ROOT();
   }
 
+  printf("Prefilling queues with queries...\n");
   for (i=0; i < prefill; i++)
   {
-    int word_id = get_random(); // TODO: read word_id from file
+    int word_id = query_list[i];
     struct queue_head *item = malloc_aligned(sizeof(struct queue_head));
-    INIT_QUEUE_HEAD(item, word_id);
-    int queue_id = assign_queue(word_id, num_partitions, num_hot_words);
+    INIT_QUEUE_HEAD(item, word_id, i);
+    int queue_id = assign_queue(word_id, num_partitions, NUM_HOT_WORDS);
     //printf("Putting word_id=%i in queue=%i\n", item->word_id, queue_id);
     queue_put(item, pqueues[queue_id]);
   }
+  printf("Queues filled.\n");
 
   struct partition_data *partition_data[num_queues];
   for (j=0; j < num_queues; j++)
@@ -302,7 +390,7 @@ int main(int argc, char **argv)
       // struct queue_root *pqueue = pqueues[j];
       struct queue_root *pqueue = partition_data[j]->pqueue;
       struct queue_head *item = malloc_aligned(sizeof(struct queue_head));
-      INIT_QUEUE_HEAD(item, -1);
+      INIT_QUEUE_HEAD(item, -1, -1);
       c = 0;
       while (1)
       {
@@ -320,6 +408,9 @@ int main(int argc, char **argv)
     }
   }
 
+  struct timespec ts;
+  ts.tv_sec = 1;
+  ts.tv_nsec = 10;
 
   struct worker_data *worker_data = malloc_aligned(sizeof(struct worker_data) * num_workers);
 
@@ -356,17 +447,16 @@ int main(int argc, char **argv)
   int reports = 0;
   while (running_workers > 0)
   {
-    sleep(1);
-    // Not doing any locking - we're only reading values.
-    // Single round shorter than 50 ms?
-    if (threshold / worker_data[0].locks_ps < 0.05)
-    {
-      fprintf(stderr, "threshold %lli -> %lli\n",
-              threshold,
-              threshold*2);
-      threshold *= 2;
-      continue;
-    }
+    nanosleep(&ts, NULL);
+    // Single round shorter than 1 ms?
+    // if (threshold / worker_data[0].words_ps < 0.001)
+    // {
+    //   fprintf(stderr, "threshold %lli -> %lli\n",
+    //           threshold,
+    //           threshold*2);
+    //   threshold *= 2;
+    //   continue;
+    // }
 
     struct stddev sd, rounds, words;
     memset(&sd, 0, sizeof(sd));
@@ -374,7 +464,7 @@ int main(int argc, char **argv)
     memset(&words, 0, sizeof(words));
     for (i=0; i < num_workers; i++)
     {
-      stddev_add(&sd, worker_data[i].locks_ps);
+      //stddev_add(&sd, worker_data[i].locks_ps);
       stddev_add(&rounds, worker_data[i].rounds);
       stddev_add(&words, worker_data[i].words_ps);
     }
@@ -389,6 +479,30 @@ int main(int argc, char **argv)
       break;
     }
   }
+
+
+  // Write out response matrix
+  printf("Writing out responses to file...\n");
+  file = fopen(RESPONSE_FILE, "w");
+  if (file == NULL)
+  {
+    printf("Response file not found.\n");
+    exit(1);
+  }
+
+  for (i = 0; i < NUM_QUERIES; i++)
+  {
+    fprintf(file, "[%d]: ", query_list[i]);
+    for (j = 0; j < EMB_SIZE; j++)
+    {
+      fprintf(file, "%f ", response_matrix[i][j]);
+    }
+    fprintf(file, "\n");
+  }
+  fclose(file);
+
+
+  printf("%llu items processed, %d items assigned\n", total_items_processed, prefill);
 
   return 0;
 }
