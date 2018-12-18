@@ -259,6 +259,7 @@ int get_random()
 int main(int argc, char **argv)
 {
   int i, j, k;
+  int unused;
   int prefill = NUM_QUERIES; // size of batch
 
   fprintf(stderr, "Running with npartitions=%i, prefill=%i\n", NUM_PARTITIONS, prefill);
@@ -288,7 +289,7 @@ int main(int argc, char **argv)
     {
       for (j = 0; j < EMB_SIZE; j++)
       {
-        fscanf(file, "%f", &(hot_embedding_matrix[i][j]));
+        unused = fscanf(file, "%f", &(hot_embedding_matrix[i][j]));
       }
     }
   }
@@ -299,7 +300,7 @@ int main(int argc, char **argv)
     {
       for (j = 0; j < EMB_SIZE; j++)
       {
-        fscanf(file, "%f", &(cold_embedding_matrices[k][i][j]));
+        unused = fscanf(file, "%f", &(cold_embedding_matrices[k][i][j]));
       }
     }
   }
@@ -315,7 +316,7 @@ int main(int argc, char **argv)
 
   for (i = 0; i < NUM_QUERIES; i++)
   {
-    fscanf(file, "%d", &(query_list[i]));
+    unused = fscanf(file, "%d", &(query_list[i]));
   }
   fclose(file);
 
