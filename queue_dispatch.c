@@ -32,18 +32,22 @@ unsigned long long gettime()
 }
 #endif
 
-#define NUM_PARTITIONS 1  // number of "cold" partitions
+#define NUM_PARTITIONS 2  // number of "cold" partitions
 
 #define HOTCOLD_MODE 1
 #define HOTCOLD_AWARE 0
 
-#define NUM_WORKERS 1  // 1 per CPU
+#define NUM_WORKERS 2  // 1 per CPU
 
 #define COLD_QUEUE_LOCKING (!((NUM_WORKERS == NUM_PARTITIONS) || (NUM_WORKERS == 1)))
 #define HOT_QUEUE_LOCKING (!(NUM_WORKERS == 1))
 
 #define WORKLOAD_SIZE 100  // number of items dequeued per queue access
 #define EMPTY_POPS_BEFORE_QUIT 10
+
+#define PARTITION_STRATEGY 0
+#define CONTIGUOUS 0
+#define INTERLEAVED 1
 
 #define ITERATIONS 10
 #define WARMUP 3
@@ -311,15 +315,36 @@ int main(int argc, char **argv)
     }
   }
 
-  for (k = 0; k < NUM_PARTITIONS; k++)
+  if (PARTITION_STRATEGY == CONTIGUOUS)
+  {
+    for (k = 0; k < NUM_PARTITIONS; k++)
+    {
+      for (i = 0; i < COLD_WORDS_PER_PARTITION; i++)
+      {
+        for (j = 0; j < EMB_SIZE; j++)
+        {
+          unused = fscanf(file, "%f", &(cold_embedding_matrices[k][i][j]));
+        }
+      }
+    }
+  }
+  else if (PARTITION_STRATEGY == INTERLEAVED)
   {
     for (i = 0; i < COLD_WORDS_PER_PARTITION; i++)
     {
-      for (j = 0; j < EMB_SIZE; j++)
+      for (k = 0; k < NUM_PARTITIONS; k++)
       {
-        unused = fscanf(file, "%f", &(cold_embedding_matrices[k][i][j]));
+        for (j = 0; j < EMB_SIZE; j++)
+        {
+          unused = fscanf(file, "%f", &(cold_embedding_matrices[k][i][j]));
+        }
       }
     }
+  }
+  else
+  {
+    printf("Unrecognized partitioning strategy.\n");
+    exit(1);
   }
   fclose(file);
 
@@ -406,15 +431,15 @@ int main(int argc, char **argv)
     }
 
     // Collect statistics
-    double avg, dev, rounds_avg, rounds_dev, words_avg, words_dev;
-    double throughput;
-    double avg_throughput;
+    double avg, dev, rounds_avg, rounds_dev, words_avg, words_dev = 0;
+    double throughput = 0;
+    double avg_throughput = 0;
     int reports = 0;
 
     double max_throughput = 0;
     while (running_workers > 0)
     {
-      nanosleep(&ts, NULL);
+      // nanosleep(&ts, NULL);
       // Single round shorter than 1 ms?
       // if (threshold / worker_data[0].words_ps < 0.001)
       // {
@@ -444,7 +469,7 @@ int main(int argc, char **argv)
       max_throughput = MAX(throughput, max_throughput);
       // printf("%.3f, %.3f, %.3f, %.3f, %.3f, %llu\n", sd.sum, avg, dev, rounds_avg, rounds_dev, threshold);
       // printf("wps: avg=%.3f, std=%.3f\n", words_avg, words_dev);
-      printf("throughput=%.3f\n", throughput);
+      // printf("throughput=%.3f\n", throughput);
 
       avg_throughput = avg_throughput*(((double)(reports - 1))/reports) + (throughput / reports);
     }
@@ -485,6 +510,7 @@ int main(int argc, char **argv)
   // avg_max_throughput /= ITERATIONS;
 
   // Write out response matrix
+  /*
   printf("Writing out responses to file...\n");
   file = fopen(RESPONSE_FILE, "w");
   if (file == NULL)
@@ -503,6 +529,7 @@ int main(int argc, char **argv)
     fprintf(file, "\n");
   }
   fclose(file);
+  */
 
   // printf("avg wps: %f\n", wps_avg);
   printf("avg avg throughput=%.3f\n", avg_avg_throughput);
