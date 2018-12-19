@@ -49,7 +49,7 @@ unsigned long long gettime()
 #define CONTIGUOUS 0
 #define INTERLEAVED 1
 
-#define QUERY_STRATEGY 1
+#define QUERY_STRATEGY 0
 #define UNIQUE_QUERIES 1
 #define REDUNDANT_QUERIES 0
 
@@ -73,7 +73,7 @@ unsigned long long gettime()
 
 #define MAX(x,y) (((x)>(y))?(x):(y))
 
-#define QUERY_FILE "./text/mobydick_queries_unique.txt"
+#define QUERY_FILE "./text/mobydick_queries.txt"
 #define NUM_REDUNDANT_QUERIES 232951  // token-level
 #define NUM_UNIQUE_QUERIES 13976  // type-level
 #define NUM_QUERIES ((QUERY_STRATEGY == REDUNDANT_QUERIES) ? NUM_REDUNDANT_QUERIES : NUM_UNIQUE_QUERIES)
@@ -402,7 +402,9 @@ int main(int argc, char **argv)
     {
       unused = fscanf(file, "%d", &word_id);
       struct queue_head *item = malloc_aligned(sizeof(struct queue_head));
-      struct row_id_list *row_head;
+      struct row_id_list *row_head = malloc_aligned(sizeof(struct row_id_list));
+      row_head->row_id = -1;
+      row_head->next = NULL;
       push(&row_head, i);
       INIT_QUEUE_HEAD(item, word_id, row_head);
       query_list[i] = item;
