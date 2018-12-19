@@ -354,6 +354,7 @@ int main(int argc, char **argv)
 
   // Create processes for each worker
   int iteration;
+  int n = 0;
   float wps_avg;
   float avg_max_throughput, max_max_throughput;
   double avg_throughput;
@@ -461,10 +462,12 @@ int main(int argc, char **argv)
     printf("max throughput=%.3f\n", max_throughput);
     if (iteration >= WARMUP)
     {
+      n++;
       // max_wps_avg += max_words_avg;
       // wps_avg += words_avg;
       avg_throughput += throughput;
-      avg_max_throughput += max_throughput;
+      // avg_max_throughput += max_throughput;
+      avg_max_throughput = avg_max_throughput*(((double)(n - 1))/n) + (max_throughput / n);
       max_max_throughput = MAX(max_throughput, max_max_throughput);
     }
   }
