@@ -356,7 +356,7 @@ int main(int argc, char **argv)
   int iteration;
   int n = 0;
   float wps_avg;
-  float avg_avg_throughput, avg_max_throughput, max_max_throughput = 0;
+  float avg_avg_throughput, avg_max_throughput, max_avg_throughput, max_max_throughput = 0;
   for (iteration=0; iteration < ITERATIONS + WARMUP; iteration++)
   {
     if (iteration < WARMUP)
@@ -476,6 +476,7 @@ int main(int argc, char **argv)
       // avg_max_throughput += max_throughput;
       avg_max_throughput = avg_max_throughput*(((double)(n - 1))/n) + (max_throughput / n);
       max_max_throughput = MAX(max_throughput, max_max_throughput);
+      max_avg_throughput = MAX(avg_throughput, max_avg_throughput);
     }
   }
   // max_wps_avg /= ITERATIONS;
@@ -506,6 +507,7 @@ int main(int argc, char **argv)
   // printf("avg wps: %f\n", wps_avg);
   printf("avg avg throughput=%.3f\n", avg_avg_throughput);
   printf("avg max throughput=%.3f\n", avg_max_throughput);
+  printf("max avg throughput=%.3f\n", max_avg_throughput);
   printf("max max throughput=%.3f\n", max_max_throughput);
   printf("%llu items processed, %d items assigned\n", total_items_processed, prefill*(ITERATIONS+WARMUP));
 
