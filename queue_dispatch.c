@@ -356,8 +356,7 @@ int main(int argc, char **argv)
   int iteration;
   int n = 0;
   float wps_avg;
-  float avg_max_throughput, max_max_throughput;
-  double avg_throughput;
+  float avg_avg_throughput, avg_max_throughput, max_max_throughput = 0;
   for (iteration=0; iteration < ITERATIONS + WARMUP; iteration++)
   {
     if (iteration < WARMUP)
@@ -409,6 +408,8 @@ int main(int argc, char **argv)
     // Collect statistics
     double avg, dev, rounds_avg, rounds_dev, words_avg, words_dev;
     double throughput;
+    double avg_throughput;
+    int reports = 0;
 
     double max_throughput = 0;
     while (running_workers > 0)
@@ -423,6 +424,8 @@ int main(int argc, char **argv)
       //   threshold *= 2;
       //   continue;
       // }
+
+      reports++;
 
       struct stddev sd, rounds, words;
       memset(&sd, 0, sizeof(sd));
@@ -442,6 +445,8 @@ int main(int argc, char **argv)
       // printf("%.3f, %.3f, %.3f, %.3f, %.3f, %llu\n", sd.sum, avg, dev, rounds_avg, rounds_dev, threshold);
       // printf("wps: avg=%.3f, std=%.3f\n", words_avg, words_dev);
       printf("throughput=%.3f\n", throughput);
+
+      avg_throughput = avg_throughput*(((double)(reports - 1))/reports) + (throughput / reports);
     }
 
     // for (i = 0; i < NUM_WORKERS; i++)
@@ -459,13 +464,15 @@ int main(int argc, char **argv)
     // stddev_get(&max_words, NULL, &max_words_avg, &max_words_dev);
     // printf("max wps: avg=%.3f, std=%.3f\n", max_words_avg, max_words_dev);
 
+    printf("avg throughput=%.3f\n", avg_throughput);
     printf("max throughput=%.3f\n", max_throughput);
     if (iteration >= WARMUP)
     {
       n++;
       // max_wps_avg += max_words_avg;
       // wps_avg += words_avg;
-      avg_throughput += throughput;
+      // avg_throughput += throughput;
+      avg_avg_throughput = avg_avg_throughput*(((double)(n - 1))/n) + (avg_throughput / n);
       // avg_max_throughput += max_throughput;
       avg_max_throughput = avg_max_throughput*(((double)(n - 1))/n) + (max_throughput / n);
       max_max_throughput = MAX(max_throughput, max_max_throughput);
@@ -473,8 +480,8 @@ int main(int argc, char **argv)
   }
   // max_wps_avg /= ITERATIONS;
   // wps_avg /= ITERATIONS;
-  avg_throughput /= ITERATIONS;
-  avg_max_throughput /= ITERATIONS;
+  // avg_throughput /= ITERATIONS;
+  // avg_max_throughput /= ITERATIONS;
 
   // Write out response matrix
   printf("Writing out responses to file...\n");
@@ -497,6 +504,7 @@ int main(int argc, char **argv)
   fclose(file);
 
   // printf("avg wps: %f\n", wps_avg);
+  printf("avg avg throughput=%.3f\n", avg_avg_throughput);
   printf("avg max throughput=%.3f\n", avg_max_throughput);
   printf("max max throughput=%.3f\n", max_max_throughput);
   printf("%llu items processed, %d items assigned\n", total_items_processed, prefill*(ITERATIONS+WARMUP));
