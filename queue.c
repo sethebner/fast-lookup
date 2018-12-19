@@ -32,11 +32,11 @@ struct queue_root *ALLOC_QUEUE_ROOT()
   return root;
 }
 
-void INIT_QUEUE_HEAD(struct queue_head *head, int word_id, int row_id)
+void INIT_QUEUE_HEAD(struct queue_head *head, int word_id, struct row_id_list *positions_head)
 {
   head->next = QUEUE_POISON1;
   head->word_id = word_id;
-  head->row_id = row_id;
+  head->row_head = positions_head;
 }
 
 void queue_put(struct queue_head *new,
@@ -130,4 +130,13 @@ int queue_get_n(struct queue_root *root, struct queue_head **workload, int n, in
   }
   return retrieved;
 
+}
+
+void push(struct row_id_list **head_ref, int new_data)
+{
+  struct row_id_list *new_node = (struct row_id_list*)malloc(sizeof(struct row_id_list));
+  new_node->row_id = new_data;
+  new_node->next = (*head_ref);
+
+  (*head_ref) = new_node;
 }

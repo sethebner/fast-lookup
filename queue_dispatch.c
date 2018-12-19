@@ -35,9 +35,9 @@ unsigned long long gettime()
 #define NUM_PARTITIONS 2  // number of "cold" partitions
 
 #define HOTCOLD_MODE 1
-#define HOTCOLD_AWARE 0
+#define HOTCOLD_AWARE 1
 
-#define NUM_WORKERS 2  // 1 per CPU
+#define NUM_WORKERS 32  // 1 per CPU
 
 #define COLD_QUEUE_LOCKING (!((NUM_WORKERS == NUM_PARTITIONS) || (NUM_WORKERS == 1)))
 #define HOT_QUEUE_LOCKING (!(NUM_WORKERS == 1))
@@ -45,9 +45,13 @@ unsigned long long gettime()
 #define WORKLOAD_SIZE 100  // number of items dequeued per queue access
 #define EMPTY_POPS_BEFORE_QUIT 10
 
-#define PARTITION_STRATEGY 0
+#define PARTITION_STRATEGY 1
 #define CONTIGUOUS 0
 #define INTERLEAVED 1
+
+#define QUERY_STRATEGY 1
+#define UNIQUE_QUERIES 1
+#define REDUNDANT_QUERIES 0
 
 #define ITERATIONS 10
 #define WARMUP 3
@@ -69,8 +73,10 @@ unsigned long long gettime()
 
 #define MAX(x,y) (((x)>(y))?(x):(y))
 
-#define QUERY_FILE "./text/mobydick_queries.txt"
-#define NUM_QUERIES 232951
+#define QUERY_FILE "./text/mobydick_queries_unique.txt"
+#define NUM_REDUNDANT_QUERIES 232951  // token-level
+#define NUM_UNIQUE_QUERIES 13976  // type-level
+#define NUM_QUERIES ((QUERY_STRATEGY == REDUNDANT_QUERIES) ? NUM_REDUNDANT_QUERIES : NUM_UNIQUE_QUERIES)
 
 #define RESPONSE_FILE "./response/mobydick_response.txt"
 
@@ -123,8 +129,8 @@ static float hot_embedding_matrix[NUM_HOT_WORDS][EMB_SIZE];
 static float cold_embedding_matrices[NUM_PARTITIONS][COLD_WORDS_PER_PARTITION][EMB_SIZE];
 
 
-static int query_list[NUM_QUERIES];
-static float response_matrix[NUM_QUERIES][EMB_SIZE];
+static struct queue_head* query_list[NUM_QUERIES];
+static float response_matrix[NUM_REDUNDANT_QUERIES][EMB_SIZE];
 
 static void *worker_loop(void *_worker_data)
 {
@@ -137,13 +143,14 @@ static void *worker_loop(void *_worker_data)
   struct queue_root *hot_queue = td->hot_queue;
 
   struct queue_head *item = malloc_aligned(sizeof(struct queue_head));
-  INIT_QUEUE_HEAD(item, -1, -1); // dummy initialize
+  INIT_QUEUE_HEAD(item, -1, NULL); // dummy initialize
 
   t0 = gettime();
   struct queue_head *workload[WORKLOAD_SIZE];
 
   int i, j;
   int retrieved = 0;
+  struct row_id_list *row_head;
   int row_id;
   float* row;
   int word_id;
@@ -154,6 +161,7 @@ static void *worker_loop(void *_worker_data)
 
   while (1)
   {
+    int processed = 0;
     // prioritize "cold" words over "hot" words because cold words can be accessed only by a unique worker
     retrieved = queue_get_n(work_queue, workload, WORKLOAD_SIZE, td->worker_id, COLD_QUEUE_LOCKING);
 
@@ -198,33 +206,63 @@ static void *worker_loop(void *_worker_data)
     // look up word_id in matrix, and store in return matrix
     for (i = 0; i < retrieved; i++)
     {
-      row_id = workload[i]->row_id;
       word_id = workload[i]->word_id;
+      row_head = workload[i]->row_head;
 
-      if ((HOTCOLD_MODE == HOTCOLD_AWARE) && (word_id < NUM_HOT_WORDS))
+      while (row_head != NULL)
       {
-        // this is a hot word
-        lookup_id = word_id;
-        for(j = 0; j < EMB_SIZE; j++)
+        row_id = row_head->row_id;
+
+        if (row_id == -1)
         {
-          // response_matrix[row_id][j] = row[j];
-          response_matrix[row_id][j] = hot_embedding_matrix[lookup_id][j];
+          break;
         }
-      }
-      else
-      {
-        // this is a cold word
-        partition_id = ID2COLD_PARTITION(word_id);
-        lookup_id = ID2COLD_PARTITION_OFFSET(word_id);
-        for(j = 0; j < EMB_SIZE; j++)
+        // printf("[%d] word_id=%d, row_id=%d\n", td->worker_id, word_id, row_id);
+
+        if ((HOTCOLD_MODE == HOTCOLD_AWARE) && (word_id < NUM_HOT_WORDS))
         {
-          // response_matrix[row_id][j] = row[j];
-          response_matrix[row_id][j] = cold_embedding_matrices[partition_id][lookup_id][j];
+          // this is a hot word
+          lookup_id = word_id;
+
+          // printf("[%d] word_id=%d, row_id=%d (hot)\n", td->worker_id, word_id, row_id);
+          // if ((row_id >= NUM_REDUNDANT_QUERIES) || (row_id == word_id))
+          // {
+          //   printf("Conflict: %d\n", row_id);
+          //   break;
+          // }
+
+          for(j = 0; j < EMB_SIZE; j++)
+          {
+            // response_matrix[row_id][j] = row[j];
+            response_matrix[row_id][j] = hot_embedding_matrix[lookup_id][j];
+          }
         }
+        else
+        {
+          // this is a cold word
+          partition_id = ID2COLD_PARTITION(word_id);
+          lookup_id = ID2COLD_PARTITION_OFFSET(word_id);
+
+          // printf("[%d] word_id=%d, row_id=%d (cold)\n", td->worker_id, word_id, row_id);
+          // if ((row_id >= NUM_REDUNDANT_QUERIES) || (row_id == word_id))
+          // {
+          //   printf("Conflict: %d\n", row_id);
+          //   break;
+          // }
+
+          for(j = 0; j < EMB_SIZE; j++)
+          {
+            // response_matrix[row_id][j] = row[j];
+            response_matrix[row_id][j] = cold_embedding_matrices[partition_id][lookup_id][j];
+          }
+        }
+
+        processed++;
+        row_head = row_head->next;
       }
     }
 
-    total_items_processed += retrieved;
+    total_items_processed += processed;
 
 
     counter += retrieved;
@@ -356,9 +394,61 @@ int main(int argc, char **argv)
     exit(1);
   }
 
-  for (i = 0; i < NUM_QUERIES; i++)
+  printf("Reading in queries...\n");
+  int word_id;
+  if (QUERY_STRATEGY == REDUNDANT_QUERIES)
   {
-    unused = fscanf(file, "%d", &(query_list[i]));
+    for (i = 0; i < NUM_QUERIES; i++)
+    {
+      unused = fscanf(file, "%d", &word_id);
+      struct queue_head *item = malloc_aligned(sizeof(struct queue_head));
+      struct row_id_list *row_head;
+      push(&row_head, i);
+      INIT_QUEUE_HEAD(item, word_id, row_head);
+      query_list[i] = item;
+    }
+  }
+  else if (QUERY_STRATEGY == UNIQUE_QUERIES)
+  {
+    char buffer[1000000];
+    char *pbuff;
+    int value;
+    for (i = 0; i < NUM_QUERIES; i++)
+    {
+      if (!fgets(buffer, sizeof(buffer), file)) { break; }
+      pbuff = buffer;
+
+      struct queue_head *item = malloc_aligned(sizeof(struct queue_head));
+      struct row_id_list *row_head = malloc_aligned(sizeof(struct row_id_list));
+      row_head->row_id = -1;
+      row_head->next = NULL;
+
+      // read line from query file
+      int seen = 0;
+      word_id = -1;
+      while (1)
+      {
+        // privileged first int is the word id, all others are row ids
+        if (*pbuff == '\n') { break; }
+        value = strtol(pbuff, &pbuff, 10);
+
+        // printf("%d\n", value);
+        // row_head.row_id = value;
+        if (seen == 0) { word_id = value; }
+        else { push(&row_head, value); }
+
+        seen++;
+
+      }
+
+      INIT_QUEUE_HEAD(item, word_id, row_head);
+      query_list[i] = item;
+    }
+  }
+  else
+  {
+    printf("Unrecognized query strategy.\n");
+    exit(1);
   }
   fclose(file);
 
@@ -377,6 +467,7 @@ int main(int argc, char **argv)
 
   struct worker_data *worker_data = malloc_aligned(sizeof(struct worker_data) * NUM_WORKERS);
 
+  printf("Starting processing...\n");
   // Create processes for each worker
   int iteration;
   int n = 0;
@@ -391,12 +482,13 @@ int main(int argc, char **argv)
     printf("Prefilling queues with queries...\n");
     for (i=0; i < prefill; i++)
     {
-      int word_id = query_list[i];
-      struct queue_head *item = malloc_aligned(sizeof(struct queue_head));
-      INIT_QUEUE_HEAD(item, word_id, i);
-      int queue_id = assign_queue(word_id);
+      // int word_id = query_list[i].word_id;
+      // struct queue_head *item = malloc_aligned(sizeof(struct queue_head));
+      // INIT_QUEUE_HEAD(item, word_id, i, &query_list[i].row_head);
+      // printf("i=%d, word_id=%d\n", i, query_list[i]->word_id);
+      int queue_id = assign_queue(query_list[i]->word_id);
       //printf("Putting word_id=%i in queue=%i\n", item->word_id, queue_id);
-      queue_put(item, pqueues[queue_id]);
+      queue_put(query_list[i], pqueues[queue_id]);
     }
     // printf("Queues filled.\n");
     for (i=0; i < NUM_WORKERS; i++)
@@ -536,7 +628,7 @@ int main(int argc, char **argv)
   printf("avg max throughput=%.3f\n", avg_max_throughput);
   printf("max avg throughput=%.3f\n", max_avg_throughput);
   printf("max max throughput=%.3f\n", max_max_throughput);
-  printf("%llu items processed, %d items assigned\n", total_items_processed, prefill*(ITERATIONS+WARMUP));
+  printf("%llu items processed, %d items assigned\n", total_items_processed, NUM_REDUNDANT_QUERIES*(ITERATIONS+WARMUP));
 
   return 0;
 }
