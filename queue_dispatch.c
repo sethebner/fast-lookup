@@ -43,6 +43,7 @@ unsigned long long gettime()
 #define HOT_QUEUE_LOCKING (!(NUM_WORKERS == 1))
 
 #define WORKLOAD_SIZE 100  // number of items dequeued per queue access
+#define EMPTY_POPS_BEFORE_QUIT 10
 
 #define ITERATIONS 10
 #define WARMUP 3
@@ -143,6 +144,7 @@ static void *worker_loop(void *_worker_data)
   float* row;
   int word_id;
   int partition_id, lookup_id;
+  int empty_pops = 0;
 
   td->max_words_ps = 0;
 
@@ -160,16 +162,31 @@ static void *worker_loop(void *_worker_data)
         if (retrieved == 0)
         {
           // nothing left to do
-          modify_worker_count(-1);
-          return NULL;
+          empty_pops++;
+          if (empty_pops >= EMPTY_POPS_BEFORE_QUIT)
+          {
+            modify_worker_count(-1);
+            return NULL;
+          }
+          else
+          {
+            continue;
+          }
         }
       }
       else
       {
         // nothing left to do
-        modify_worker_count(-1);
-
-        return NULL;
+        empty_pops++;
+        if (empty_pops >= EMPTY_POPS_BEFORE_QUIT)
+        {
+          modify_worker_count(-1);
+          return NULL;
+        }
+        else
+        {
+          continue;
+        }
       }
     }
 
@@ -338,6 +355,8 @@ int main(int argc, char **argv)
   // Create processes for each worker
   int iteration;
   float wps_avg;
+  float avg_max_throughput, max_max_throughput;
+  double avg_throughput;
   for (iteration=0; iteration < ITERATIONS + WARMUP; iteration++)
   {
     if (iteration < WARMUP)
@@ -355,87 +374,104 @@ int main(int argc, char **argv)
       queue_put(item, pqueues[queue_id]);
     }
     // printf("Queues filled.\n");
-  for (i=0; i < NUM_WORKERS; i++)
-  {
-    modify_worker_count(1);
+    for (i=0; i < NUM_WORKERS; i++)
+    {
+      modify_worker_count(1);
 
-    // assign worker to a partition's queue and to the hot queue if it exists
-    worker_data[i].worker_id = i;
-    if (HOTCOLD_MODE == HOTCOLD_AWARE)
-    {
-      worker_data[i].work_queue = pqueues[i%NUM_COLD_QUEUES + 1];
-      worker_data[i].hot_queue = pqueues[0];
-      // printf("w=%d -> q=%d\n", worker_data[i].worker_id, i%num_cold_queues + 1);
-    }
-    else
-    {
-      worker_data[i].work_queue = pqueues[i % NUM_QUEUES];
-      worker_data[i].hot_queue = NULL;
-      // printf("w=%d -> q=%d\n", worker_data[i].worker_id, i % num_queues);
+      // assign worker to a partition's queue and to the hot queue if it exists
+      worker_data[i].worker_id = i;
+      if (HOTCOLD_MODE == HOTCOLD_AWARE)
+      {
+        worker_data[i].work_queue = pqueues[i%NUM_COLD_QUEUES + 1];
+        worker_data[i].hot_queue = pqueues[0];
+        // printf("w=%d -> q=%d\n", worker_data[i].worker_id, i%num_cold_queues + 1);
+      }
+      else
+      {
+        worker_data[i].work_queue = pqueues[i % NUM_QUEUES];
+        worker_data[i].hot_queue = NULL;
+        // printf("w=%d -> q=%d\n", worker_data[i].worker_id, i % num_queues);
+      }
+
+      // worker_data[i].worker_id = i;
+      int r = pthread_create(&worker_data[i].thread_id,
+                             NULL,
+                             &worker_loop,
+                             &worker_data[i]);
+      if (r != 0)
+      {
+        perror("pthread_create()");
+        abort();
+      }
     }
 
-    // worker_data[i].worker_id = i;
-    int r = pthread_create(&worker_data[i].thread_id,
-                           NULL,
-                           &worker_loop,
-                           &worker_data[i]);
-    if (r != 0)
+    // Collect statistics
+    double avg, dev, rounds_avg, rounds_dev, words_avg, words_dev;
+    double throughput;
+
+    double max_throughput = 0;
+    while (running_workers > 0)
     {
-      perror("pthread_create()");
-      abort();
+      nanosleep(&ts, NULL);
+      // Single round shorter than 1 ms?
+      // if (threshold / worker_data[0].words_ps < 0.001)
+      // {
+      //   fprintf(stderr, "threshold %lli -> %lli\n",
+      //           threshold,
+      //           threshold*2);
+      //   threshold *= 2;
+      //   continue;
+      // }
+
+      struct stddev sd, rounds, words;
+      memset(&sd, 0, sizeof(sd));
+      memset(&rounds, 0, sizeof(rounds));
+      memset(&words, 0, sizeof(words));
+      for (i=0; i < NUM_WORKERS; i++)
+      {
+        stddev_add(&rounds, worker_data[i].rounds);
+        stddev_add(&words, worker_data[i].words_ps);
+      }
+      // double avg, dev, rounds_avg, rounds_dev, words_avg, words_dev;
+      stddev_get(&sd, NULL, &avg, &dev);
+      stddev_get(&rounds, NULL, &rounds_avg, &rounds_dev);
+      stddev_get(&words, NULL, &words_avg, &words_dev);
+      throughput = (float)words.sum;
+      max_throughput = MAX(throughput, max_throughput);
+      // printf("%.3f, %.3f, %.3f, %.3f, %.3f, %llu\n", sd.sum, avg, dev, rounds_avg, rounds_dev, threshold);
+      // printf("wps: avg=%.3f, std=%.3f\n", words_avg, words_dev);
+      printf("throughput=%.3f\n", throughput);
+    }
+
+    // for (i = 0; i < NUM_WORKERS; i++)
+    // {
+    //   pthread_join(worker_data[i].thread_id, NULL);
+    // }
+    //
+    // struct stddev max_words;
+    // memset(&max_words, 0, sizeof(max_words));
+    // for (i = 0; i < NUM_WORKERS; i++)
+    // {
+    //   stddev_add(&max_words, worker_data[i].max_words_ps);
+    // }
+    // double max_words_avg, max_words_dev;
+    // stddev_get(&max_words, NULL, &max_words_avg, &max_words_dev);
+    // printf("max wps: avg=%.3f, std=%.3f\n", max_words_avg, max_words_dev);
+
+    printf("max throughput=%.3f\n", max_throughput);
+    if (iteration >= WARMUP)
+    {
+      // max_wps_avg += max_words_avg;
+      // wps_avg += words_avg;
+      avg_throughput += throughput;
+      avg_max_throughput += max_throughput;
+      max_max_throughput = MAX(max_throughput, max_max_throughput);
     }
   }
-
-  // Collect statistics
-  // double avg, dev, rounds_avg, rounds_dev, words_avg, words_dev;
-  // while (running_workers > 0)
-  // {
-  //   nanosleep(&ts, NULL);
-  //   // Single round shorter than 1 ms?
-  //   // if (threshold / worker_data[0].words_ps < 0.001)
-  //   // {
-  //   //   fprintf(stderr, "threshold %lli -> %lli\n",
-  //   //           threshold,
-  //   //           threshold*2);
-  //   //   threshold *= 2;
-  //   //   continue;
-  //   // }
-  //
-  //   struct stddev sd, rounds, words;
-  //   memset(&sd, 0, sizeof(sd));
-  //   memset(&rounds, 0, sizeof(rounds));
-  //   memset(&words, 0, sizeof(words));
-  //   for (i=0; i < NUM_WORKERS; i++)
-  //   {
-  //     stddev_add(&rounds, worker_data[i].rounds);
-  //     stddev_add(&words, worker_data[i].words_ps);
-  //   }
-  //   // double avg, dev, rounds_avg, rounds_dev, words_avg, words_dev;
-  //   stddev_get(&sd, NULL, &avg, &dev);
-  //   stddev_get(&rounds, NULL, &rounds_avg, &rounds_dev);
-  //   stddev_get(&words, NULL, &words_avg, &words_dev);
-  //   // printf("%.3f, %.3f, %.3f, %.3f, %.3f, %llu\n", sd.sum, avg, dev, rounds_avg, rounds_dev, threshold);
-  //   printf("wps: avg=%.3f, std=%.3f\n", words_avg, words_dev);
-  // }
-
-  for (i = 0; i < NUM_WORKERS; i++)
-  {
-    pthread_join(worker_data[i].thread_id, NULL);
-  }
-
-  struct stddev max_words;
-  memset(&max_words, 0, sizeof(max_words));
-  for (i = 0; i < NUM_WORKERS; i++)
-  {
-    stddev_add(&max_words, worker_data[i].max_words_ps);
-  }
-  double max_words_avg, max_words_dev;
-  stddev_get(&max_words, NULL, &max_words_avg, &max_words_dev);
-  printf("max wps: avg=%.3f, std=%.3f\n", max_words_avg, max_words_dev);
-  if (iteration >= WARMUP) { wps_avg += max_words_avg; }
-}
-wps_avg /= ITERATIONS;
-
+  // max_wps_avg /= ITERATIONS;
+  // wps_avg /= ITERATIONS;
+  avg_throughput /= ITERATIONS;
+  avg_max_throughput /= ITERATIONS;
 
   // Write out response matrix
   printf("Writing out responses to file...\n");
@@ -457,7 +493,9 @@ wps_avg /= ITERATIONS;
   }
   fclose(file);
 
-  printf("avg wps: %f\n", wps_avg);
+  // printf("avg wps: %f\n", wps_avg);
+  printf("avg max throughput=%.3f\n", avg_max_throughput);
+  printf("max max throughput=%.3f\n", max_max_throughput);
   printf("%llu items processed, %d items assigned\n", total_items_processed, prefill*(ITERATIONS+WARMUP));
 
   return 0;
