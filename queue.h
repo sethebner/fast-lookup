@@ -5,13 +5,6 @@
 
 struct queue_root;
 
-// struct queue_head
-// {
-//   struct queue_head *next;
-//   int word_id;
-//   int row_id;
-// };
-
 struct row_id_list
 {
   struct row_id_list *next;
