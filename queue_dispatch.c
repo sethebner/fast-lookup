@@ -1,4 +1,4 @@
-// Adapted from https://github.com/majek/dump/blob/master/msqueue/main.c
+// Program structure adapted from https://github.com/majek/dump/blob/master/msqueue/main.c
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -11,12 +11,74 @@
 #include <stdint.h>
 #include <math.h>
 
+#include "queue.h"
+#include "stddev.h"
+
+// *** ENUMERATED OPTIONS FOR HYPERPARAMETERS (do not modify) ***
+// Partition strategies
+#define CONTIGUOUS 0
+#define INTERLEAVED 1
+
+// Query strategies
+#define UNIQUE_QUERIES 1
+#define REDUNDANT_QUERIES 0
+
+// Hot-Cold strategy
+#define HOTCOLD_AWARE 1
+#define HOTCOLD_UNAWARE 0
+// *** END OF OPTIONS ***
+
+// *** THESE HYPERPARAMETERS MAY BE MODIFIED ***
+#define NUM_PARTITIONS 2  // number of "cold" partitions
+#define NUM_WORKERS 32  // threads
+#define WORKLOAD_SIZE 100  // number of items dequeued per queue access
+
+#define HOTCOLD_MODE HOTCOLD_AWARE
+#define PARTITION_STRATEGY INTERLEAVED
+#define QUERY_STRATEGY REDUNDANT_QUERIES
+
+#define ITERATIONS 10
+#define WARMUP 3
+#define EMPTY_POPS_BEFORE_QUIT 10
+
+#define MATRIX_FILE "./glove.6B/glove.6B.100d_embs.txt"
+#define VOCAB_SIZE 400001 // GloVe 400K + 1 <UNK> token
+#define EMB_SIZE 100
+#define HOT_WORDS 1000
+
+#define QUERY_FILE ((QUERY_STRATEGY == REDUNDANT_QUERIES) ? "./text/mobydick_queries.txt" : "./text/mobydick_queries_unique.txt")
+#define NUM_REDUNDANT_QUERIES 232951  // token-level
+#define NUM_UNIQUE_QUERIES 13976  // type-level
+#define RESPONSE_FILE "./response/mobydick_response.txt" // output file
+// *** END OF HYPERPARAMETERS ***
+
+
+// Helper macros (do not modify these)
+#define COLD_QUEUE_LOCKING (!((NUM_WORKERS == NUM_PARTITIONS) || (NUM_WORKERS == 1)))
+#define HOT_QUEUE_LOCKING (!(NUM_WORKERS == 1))
+
+#define NUM_HOT_QUEUES (1*(HOTCOLD_MODE == HOTCOLD_AWARE))
+#define NUM_COLD_QUEUES NUM_PARTITIONS
+#define NUM_QUEUES (NUM_HOT_QUEUES + NUM_COLD_QUEUES)
+
+#define NUM_QUERIES ((QUERY_STRATEGY == REDUNDANT_QUERIES) ? NUM_REDUNDANT_QUERIES : NUM_UNIQUE_QUERIES)
+#define NUM_HOT_WORDS (HOT_WORDS*(HOTCOLD_MODE == HOTCOLD_AWARE))
+
+#define CEIL(x,y) (x/y + (x % y != 0))
+#define COLD_WORDS_PER_PARTITION (CEIL((VOCAB_SIZE - NUM_HOT_WORDS), NUM_PARTITIONS))
+#define ID2COLD_PARTITION_CONTIGUOUS(id) (id / COLD_WORDS_PER_PARTITION)
+#define ID2COLD_PARTITION_OFFSET_CONTIGUOUS(id) (id - NUM_HOT_WORDS - (ID2COLD_PARTITION(id)*COLD_WORDS_PER_PARTITION))
+#define ID2COLD_PARTITION_INTERLEAVED(id) ((id - NUM_HOT_WORDS) % NUM_PARTITIONS)
+#define ID2COLD_PARTITION_OFFSET_INTERLEAVED(id) ((id - NUM_HOT_WORDS) / NUM_PARTITIONS)
+
+#define ID2COLD_PARTITION(id) ((PARTITION_STRATEGY == CONTIGUOUS) ? ID2COLD_PARTITION_CONTIGUOUS(id) : ID2COLD_PARTITION_INTERLEAVED(id))
+#define ID2COLD_PARTITION_OFFSET(id) ((PARTITION_STRATEGY == CONTIGUOUS) ? ID2COLD_PARTITION_OFFSET_CONTIGUOUS(id) : ID2COLD_PARTITION_OFFSET_INTERLEAVED(id))
+
+#define MAX(x,y) (((x)>(y))?(x):(y))
+
 #ifdef __MACH__
 #  include <mach/mach_time.h>
 #endif
-
-#include "queue.h"
-#include "stddev.h"
 
 #ifdef __MACH__
 unsigned long long gettime()
@@ -32,64 +94,7 @@ unsigned long long gettime()
 }
 #endif
 
-#define NUM_PARTITIONS 2  // number of "cold" partitions
-
-#define HOTCOLD_MODE 1
-#define HOTCOLD_AWARE 1
-
-#define NUM_WORKERS 32  // 1 per CPU
-
-#define COLD_QUEUE_LOCKING (!((NUM_WORKERS == NUM_PARTITIONS) || (NUM_WORKERS == 1)))
-#define HOT_QUEUE_LOCKING (!(NUM_WORKERS == 1))
-
-#define WORKLOAD_SIZE 100  // number of items dequeued per queue access
-#define EMPTY_POPS_BEFORE_QUIT 10
-
-#define PARTITION_STRATEGY 1
-#define CONTIGUOUS 0
-#define INTERLEAVED 1
-
-#define QUERY_STRATEGY 0
-#define UNIQUE_QUERIES 1
-#define REDUNDANT_QUERIES 0
-
-#define ITERATIONS 10
-#define WARMUP 3
-
-#define MATRIX_FILE "./glove.6B/glove.6B.100d_embs.txt"
-#define VOCAB_SIZE 400001
-#define EMB_SIZE 100
-
-#define NUM_HOT_WORDS (1000*(HOTCOLD_MODE == HOTCOLD_AWARE))
-
-#define NUM_HOT_QUEUES (1*(HOTCOLD_MODE == HOTCOLD_AWARE))
-#define NUM_COLD_QUEUES NUM_PARTITIONS
-#define NUM_QUEUES (NUM_HOT_QUEUES + NUM_COLD_QUEUES)
-
-#define CEIL(x,y) (x/y + (x % y != 0))
-#define COLD_WORDS_PER_PARTITION (CEIL((VOCAB_SIZE - NUM_HOT_WORDS), NUM_PARTITIONS))
-#define ID2COLD_PARTITION_CONTIGUOUS(id) (id / COLD_WORDS_PER_PARTITION)
-#define ID2COLD_PARTITION_OFFSET_CONTIGUOUS(id) (id - NUM_HOT_WORDS - (ID2COLD_PARTITION(id)*COLD_WORDS_PER_PARTITION))
-#define ID2COLD_PARTITION_INTERLEAVED(id) ((id - NUM_HOT_WORDS) % NUM_PARTITIONS)
-#define ID2COLD_PARTITION_OFFSET_INTERLEAVED(id) ((id - NUM_HOT_WORDS) / NUM_PARTITIONS)
-
-#define ID2COLD_PARTITION(id) ((PARTITION_STRATEGY == CONTIGUOUS) ? ID2COLD_PARTITION_CONTIGUOUS(id) : ID2COLD_PARTITION_INTERLEAVED(id))
-#define ID2COLD_PARTITION_OFFSET(id) ((PARTITION_STRATEGY == CONTIGUOUS) ? ID2COLD_PARTITION_OFFSET_CONTIGUOUS(id) : ID2COLD_PARTITION_OFFSET_INTERLEAVED(id))
-
-#define MAX(x,y) (((x)>(y))?(x):(y))
-
-#define QUERY_FILE "./text/mobydick_queries.txt"
-#define NUM_REDUNDANT_QUERIES 232951  // token-level
-#define NUM_UNIQUE_QUERIES 13976  // type-level
-#define NUM_QUERIES ((QUERY_STRATEGY == REDUNDANT_QUERIES) ? NUM_REDUNDANT_QUERIES : NUM_UNIQUE_QUERIES)
-
-#define RESPONSE_FILE "./response/mobydick_response.txt"
-
-#define DEBUG_MODE 1
-#define DEBUG_ON 0
-
-#define MAX_N 1000
-#define MIN_N 0
+// end of preamble
 
 volatile int running_workers = 0;
 pthread_mutex_t worker_counter = PTHREAD_MUTEX_INITIALIZER;
@@ -129,18 +134,14 @@ static unsigned long long threshold = 1000;
 
 static unsigned long long total_items_processed = 0;
 
-
 static float hot_embedding_matrix[NUM_HOT_WORDS][EMB_SIZE];
 static float cold_embedding_matrices[NUM_PARTITIONS][COLD_WORDS_PER_PARTITION][EMB_SIZE];
-
-
 static struct queue_head* query_list[NUM_QUERIES];
 static float response_matrix[NUM_REDUNDANT_QUERIES][EMB_SIZE];
 
 static void *worker_loop(void *_worker_data)
 {
-  // TODO: sleep a little at the start to allow all workers to be created before starting?
-
+  // Main work for each thread: de-queueing queries, reading embeddings, writing out embeddings
   unsigned long long counter = 0;
   unsigned long long t0, t1;
   struct worker_data *td = (struct worker_data *)_worker_data;
@@ -167,7 +168,7 @@ static void *worker_loop(void *_worker_data)
   while (1)
   {
     int processed = 0;
-    // prioritize "cold" words over "hot" words because cold words can be accessed only by a unique worker
+    // prioritize "cold" words over "hot" words because cold words belong to unique cold partitions
     retrieved = queue_get_n(work_queue, workload, WORKLOAD_SIZE, td->worker_id, COLD_QUEUE_LOCKING);
 
     if (retrieved == 0)
@@ -222,23 +223,14 @@ static void *worker_loop(void *_worker_data)
         {
           break;
         }
-        // printf("[%d] word_id=%d, row_id=%d\n", td->worker_id, word_id, row_id);
 
         if ((HOTCOLD_MODE == HOTCOLD_AWARE) && (word_id < NUM_HOT_WORDS))
         {
           // this is a hot word
           lookup_id = word_id;
 
-          // printf("[%d] word_id=%d, row_id=%d (hot)\n", td->worker_id, word_id, row_id);
-          // if ((row_id >= NUM_REDUNDANT_QUERIES) || (row_id == word_id))
-          // {
-          //   printf("Conflict: %d\n", row_id);
-          //   break;
-          // }
-
           for(j = 0; j < EMB_SIZE; j++)
           {
-            // response_matrix[row_id][j] = row[j];
             response_matrix[row_id][j] = hot_embedding_matrix[lookup_id][j];
           }
         }
@@ -248,16 +240,8 @@ static void *worker_loop(void *_worker_data)
           partition_id = ID2COLD_PARTITION(word_id);
           lookup_id = ID2COLD_PARTITION_OFFSET(word_id);
 
-          // printf("[%d] word_id=%d, row_id=%d (cold)\n", td->worker_id, word_id, row_id);
-          // if ((row_id >= NUM_REDUNDANT_QUERIES) || (row_id == word_id))
-          // {
-          //   printf("Conflict: %d\n", row_id);
-          //   break;
-          // }
-
           for(j = 0; j < EMB_SIZE; j++)
           {
-            // response_matrix[row_id][j] = row[j];
             response_matrix[row_id][j] = cold_embedding_matrices[partition_id][lookup_id][j];
           }
         }
@@ -284,9 +268,8 @@ static void *worker_loop(void *_worker_data)
       td->words_ps = words_ps;
       td->max_words_ps = MAX(words_ps, td->max_words_ps);
       td->rounds += 1;
-      // t0 = t1;
 
-      #if DEBUG_ON
+      #if 0
       printf("worker=%d round done: %llu in %.3fms, words per sec=%.3f\n",
              td->worker_id,
              counter,
@@ -313,11 +296,6 @@ int assign_queue(int word_id)
     else { return ID2COLD_PARTITION(word_id) + 1; }
   }
   else { return ID2COLD_PARTITION(word_id); }
-}
-
-int get_random()
-{
-  return rand() % (MAX_N + 1 - MIN_N) + MIN_N;
 }
 
 int main(int argc, char **argv)
@@ -435,12 +413,10 @@ int main(int argc, char **argv)
       word_id = -1;
       while (1)
       {
-        // privileged first int is the word id, all others are row ids
+        // privileged first int is the word id, all others in same line are row ids
         if (*pbuff == '\n') { break; }
         value = strtol(pbuff, &pbuff, 10);
 
-        // printf("%d\n", value);
-        // row_head.row_id = value;
         if (seen == 0) { word_id = value; }
         else { push(&row_head, value); }
 
@@ -486,18 +462,15 @@ int main(int argc, char **argv)
     {
       printf("[W] ");
     }
+
     printf("Prefilling queues with queries...\n");
     for (i=0; i < prefill; i++)
     {
-      // int word_id = query_list[i].word_id;
-      // struct queue_head *item = malloc_aligned(sizeof(struct queue_head));
-      // INIT_QUEUE_HEAD(item, word_id, i, &query_list[i].row_head);
-      // printf("i=%d, word_id=%d\n", i, query_list[i]->word_id);
       int queue_id = assign_queue(query_list[i]->word_id);
-      //printf("Putting word_id=%i in queue=%i\n", item->word_id, queue_id);
       queue_put(query_list[i], pqueues[queue_id]);
     }
-    // printf("Queues filled.\n");
+    printf("Queues filled.\n");
+
     for (i=0; i < NUM_WORKERS; i++)
     {
       modify_worker_count(1);
@@ -508,16 +481,13 @@ int main(int argc, char **argv)
       {
         worker_data[i].work_queue = pqueues[i%NUM_COLD_QUEUES + 1];
         worker_data[i].hot_queue = pqueues[0];
-        // printf("w=%d -> q=%d\n", worker_data[i].worker_id, i%num_cold_queues + 1);
       }
       else
       {
         worker_data[i].work_queue = pqueues[i % NUM_QUEUES];
         worker_data[i].hot_queue = NULL;
-        // printf("w=%d -> q=%d\n", worker_data[i].worker_id, i % num_queues);
       }
 
-      // worker_data[i].worker_id = i;
       int r = pthread_create(&worker_data[i].thread_id,
                              NULL,
                              &worker_loop,
@@ -539,15 +509,6 @@ int main(int argc, char **argv)
     while (running_workers > 0)
     {
       // nanosleep(&ts, NULL);
-      // Single round shorter than 1 ms?
-      // if (threshold / worker_data[0].words_ps < 0.001)
-      // {
-      //   fprintf(stderr, "threshold %lli -> %lli\n",
-      //           threshold,
-      //           threshold*2);
-      //   threshold *= 2;
-      //   continue;
-      // }
 
       reports++;
 
@@ -560,56 +521,29 @@ int main(int argc, char **argv)
         stddev_add(&rounds, worker_data[i].rounds);
         stddev_add(&words, worker_data[i].words_ps);
       }
-      // double avg, dev, rounds_avg, rounds_dev, words_avg, words_dev;
+
       stddev_get(&sd, NULL, &avg, &dev);
       stddev_get(&rounds, NULL, &rounds_avg, &rounds_dev);
       stddev_get(&words, NULL, &words_avg, &words_dev);
       throughput = (float)words.sum;
       max_throughput = MAX(throughput, max_throughput);
-      // printf("%.3f, %.3f, %.3f, %.3f, %.3f, %llu\n", sd.sum, avg, dev, rounds_avg, rounds_dev, threshold);
-      // printf("wps: avg=%.3f, std=%.3f\n", words_avg, words_dev);
-      // printf("throughput=%.3f\n", throughput);
 
       avg_throughput = avg_throughput*(((double)(reports - 1))/reports) + (throughput / reports);
     }
-
-    // for (i = 0; i < NUM_WORKERS; i++)
-    // {
-    //   pthread_join(worker_data[i].thread_id, NULL);
-    // }
-    //
-    // struct stddev max_words;
-    // memset(&max_words, 0, sizeof(max_words));
-    // for (i = 0; i < NUM_WORKERS; i++)
-    // {
-    //   stddev_add(&max_words, worker_data[i].max_words_ps);
-    // }
-    // double max_words_avg, max_words_dev;
-    // stddev_get(&max_words, NULL, &max_words_avg, &max_words_dev);
-    // printf("max wps: avg=%.3f, std=%.3f\n", max_words_avg, max_words_dev);
 
     printf("avg throughput=%.3f\n", avg_throughput);
     printf("max throughput=%.3f\n", max_throughput);
     if (iteration >= WARMUP)
     {
       n++;
-      // max_wps_avg += max_words_avg;
-      // wps_avg += words_avg;
-      // avg_throughput += throughput;
       avg_avg_throughput = avg_avg_throughput*(((double)(n - 1))/n) + (avg_throughput / n);
-      // avg_max_throughput += max_throughput;
       avg_max_throughput = avg_max_throughput*(((double)(n - 1))/n) + (max_throughput / n);
       max_max_throughput = MAX(max_throughput, max_max_throughput);
       max_avg_throughput = MAX(avg_throughput, max_avg_throughput);
     }
   }
-  // max_wps_avg /= ITERATIONS;
-  // wps_avg /= ITERATIONS;
-  // avg_throughput /= ITERATIONS;
-  // avg_max_throughput /= ITERATIONS;
 
   // Write out response matrix
-  /*
   printf("Writing out responses to file...\n");
   file = fopen(RESPONSE_FILE, "w");
   if (file == NULL)
@@ -618,9 +552,8 @@ int main(int argc, char **argv)
     exit(1);
   }
 
-  for (i = 0; i < NUM_QUERIES; i++)
+  for (i = 0; i < NUM_REDUNDANT_QUERIES; i++)
   {
-    fprintf(file, "[%d]: ", query_list[i]);
     for (j = 0; j < EMB_SIZE; j++)
     {
       fprintf(file, "%f ", response_matrix[i][j]);
@@ -628,9 +561,8 @@ int main(int argc, char **argv)
     fprintf(file, "\n");
   }
   fclose(file);
-  */
 
-  // printf("avg wps: %f\n", wps_avg);
+
   printf("avg avg throughput=%.3f\n", avg_avg_throughput);
   printf("avg max throughput=%.3f\n", avg_max_throughput);
   printf("max avg throughput=%.3f\n", max_avg_throughput);
